@@ -123,24 +123,25 @@ CORE_ALIASES = {
                      'submitted at', 'fecha de envio'),
     'email': ('email', 'correo electronico', 'correo'),
     'reporter': ('name', 'nombre', 'respondent', 'respondedor'),
-    'area': ('area', 'seleccione area', 'selecciona area'),
+    'area': ('area', 'seleccione area', 'selecciona area', 'cual es tu area de trabajo'),
 }
-FIELD_TERMS = {
-    'shift': ('turno',),
-    'report_date': ('fecha',),
-    'ot': (' ot ', 'orden de trabajo', 'numero de ot', 'n ot'),
-    'activity': ('actividad',),
-    'progress': ('avance', 'porcentaje'),
-    'workers': ('trabajadores', 'personal', 'dotacion'),
-    'hours': ('horas',),
-    'comment': ('comentario', 'resena', 'observacion'),
-    'photo_before': ('foto antes', 'fotografia antes', 'imagen antes'),
-    'photo_during': ('foto durante', 'fotografia durante', 'imagen durante'),
-    'photo_after': ('foto final', 'fotografia final', 'imagen final', 'foto despues'),
+FIELD_RULES = {
+    # Each inner tuple is a required semantic group; one alternative in every group must match.
+    'shift': (('turno',),),
+    'report_date': (('fecha',),),
+    'ot': (('ot', 'orden de trabajo'),),
+    'activity': (('actividad',),),
+    'progress': (('avance', 'porcentaje'),),
+    'workers': (('trabajadores', 'personal', 'dotacion'),),
+    'hours': (('hora', 'horas'),),
+    'comment': (('comentario', 'resena', 'observacion'),),
+    'photo_before': (('foto', 'fotografia', 'imagen'), ('antes',)),
+    'photo_during': (('foto', 'fotografia', 'imagen'), ('durante',)),
+    'photo_after': (('foto', 'fotografia', 'imagen'), ('final', 'despues'),),
 }
 
 
-def find_value(index, aliases=(), terms=(), area=''):
+def find_value(index, aliases=(), groups=(), area=''):
     for alias in aliases:
         if normalized_key(alias) in index:
             return index[normalized_key(alias)]
@@ -148,7 +149,9 @@ def find_value(index, aliases=(), terms=(), area=''):
     candidates = []
     for key, item in index.items():
         padded = f' {key} '
-        if any(normalized_key(term) in padded for term in terms):
+        if groups and all(any(f' {normalized_key(term)} ' in padded
+                              for term in alternatives)
+                          for alternatives in groups):
             candidates.append((area_key not in key, len(key), item))
     return min(candidates, default=(True, 0, None))[2]
 
@@ -172,8 +175,8 @@ def normalize_json_record(record):
     area = area_lookup.get(normalized_key(area_raw))
     if not area:
         raise ValueError('área inválida; use Filtros, Molibdeno, Tranque o Flotación')
-    fields = {name: find_value(index, terms=terms, area=area)
-              for name, terms in FIELD_TERMS.items()}
+    fields = {name: find_value(index, groups=groups, area=area)
+              for name, groups in FIELD_RULES.items()}
     ot = value(fields['ot'])
     if not ot:
         raise ValueError('falta la OT del área seleccionada')
@@ -229,14 +232,16 @@ def sync_forms(data):
             reports.append(normalize_json_record(row))
         except ValueError as exc:
             errors.append({'index': position, 'error': str(exc)})
+    # The batch is atomic: a malformed row rejects every row, avoiding a silent partial sync.
+    committed = 0 if errors else len(reports)
     with database() as conn:
-        if reports:
+        if not errors and reports:
             conn.executemany(UPSERT_REPORT, reports)
         conn.execute('INSERT INTO sync_log(at,records,source,errors,detail) VALUES (?,?,?,?,?)',
-                     (dt.datetime.now(dt.timezone.utc).isoformat(), len(reports),
+                     (dt.datetime.now(dt.timezone.utc).isoformat(), committed,
                       'Power Automate', len(errors),
                       json.dumps(errors[:20], ensure_ascii=False) if errors else None))
-    return len(reports), errors
+    return committed, errors
 
 
 def import_xlsx(blob, source='Carga manual'):
@@ -360,9 +365,13 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             data = json.loads(raw.decode('utf-8'))
             imported, errors = sync_forms(data)
-            status = 200 if imported or not errors else 422
-            self.send(status, json.dumps({'processed': len(data['body']['value']),
-                                          'upserted': imported, 'errors': errors[:20]},
+            status = 422 if errors else 200
+            result = 'rejected' if errors else 'success'
+            self.send(status, json.dumps({'status': result, 'atomic': True,
+                                          'processed': len(data['body']['value']),
+                                          'upserted': imported,
+                                          'rejected': len(data['body']['value']) if errors else 0,
+                                          'errors': errors[:20]},
                                          ensure_ascii=False))
         except (UnicodeDecodeError, json.JSONDecodeError):
             log_sync(0, 'Power Automate', 1, 'JSON inválido')

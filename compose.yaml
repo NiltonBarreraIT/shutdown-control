@@ -5,7 +5,8 @@ services:
     environment:
       DASHBOARD_USER: ${DASHBOARD_USER:?Defina usuario en .env}
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?Defina contraseña en .env}
-      FORMS_SYNC_TOKEN: ${FORMS_SYNC_TOKEN:?Defina token de Power Automate en .env}
+      # Backward-compatible startup: without a token the sync endpoint fails closed with HTTP 503.
+      FORMS_SYNC_TOKEN: ${FORMS_SYNC_TOKEN:-}
       DATABASE_PATH: /data/shutdown.db
       HOST: 0.0.0.0
       PORT: 8080

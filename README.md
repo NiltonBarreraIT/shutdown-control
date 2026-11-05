@@ -18,10 +18,10 @@ Primera versión operativa para seguimiento de órdenes de trabajo a partir del 
 `POST /api/sync/forms` recibe exactamente el objeto producido por Excel Online (Business):
 
 ```json
-{"body":{"value":[{"Id":"101","Área":"Filtros","Número de OT Filtros":"450001"}]}}
+{"body":{"value":[{"Id":"101","¿Cuál es tu área de trabajo?":"Filtros","Ingresa el número de OT (Filtros)":"450001"}]}}
 ```
 
-Los nombres de las columnas se normalizan ignorando mayúsculas, tildes y puntuación. Los campos operacionales se localizan por su nombre y por el área seleccionada; no se usa el orden de las columnas. Las áreas admitidas son Filtros, Molibdeno, Tranque y Flotación. Cada fila debe incluir `Id`, área y OT. La API acepta hasta 2 MiB y 5.000 filas por solicitud por defecto. Estos límites pueden reducirse mediante `SYNC_MAX_BYTES` y `SYNC_MAX_RECORDS`.
+Los nombres de las columnas se normalizan ignorando mayúsculas, tildes, signos, espacios normales y espacios especiales. El área se reconoce desde `¿Cuál es tu área de trabajo?`. Los campos operacionales se localizan por su significado y por el área entre paréntesis; no se usa el orden de las columnas. Esto contempla Filtros, Molibdeno, Tranque y Flotación, incluyendo encabezados como `Carga una fotografía del ANTES del trabajo (Filtros)`, `... DURANTE ...` y `... FINAL ...` para cada área. Cada fila debe incluir `Id`, área y OT. La API acepta hasta 2 MiB y 5.000 filas por solicitud por defecto. Estos límites pueden reducirse mediante `SYNC_MAX_BYTES` y `SYNC_MAX_RECORDS`.
 
 La autenticación de esta ruta es independiente de la contraseña del dashboard. Genere un secreto aleatorio (por ejemplo, con `openssl rand -hex 32`), configúrelo sólo en el `.env` de cada entorno y envíelo desde Power Automate como encabezado:
 
@@ -30,7 +30,7 @@ Authorization: Bearer <FORMS_SYNC_TOKEN>
 Content-Type: application/json
 ```
 
-No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acciones o logs. La respuesta informa `processed`, `upserted` y hasta 20 errores de validación por posición, sin devolver datos personales. Las filas válidas se guardan aunque otra fila del lote sea inválida. El dashboard muestra fecha UTC, fuente, cantidad y errores de la última sincronización.
+No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acciones o logs. La sincronización es atómica: si todas las filas son válidas responde HTTP `200` con `status: "success"`; si una o más filas fallan responde HTTP `422` con `status: "rejected"`, `atomic: true`, `upserted: 0` y errores por posición. En este último caso no se guarda ninguna fila del lote, por lo que Power Automate puede corregirlo y reintentarlo sin una pérdida parcial silenciosa. El dashboard muestra fecha UTC, fuente, cantidad confirmada y errores de la última sincronización.
 
 ### Prueba local con datos ficticios
 
@@ -51,10 +51,14 @@ $headers = @{ Authorization = 'Bearer token-local-largo-no-productivo' }
 $body = @{ body = @{ value = @(@{
   Id = 'TEST-101'; 'Hora de inicio' = '2026-11-05T08:00:00Z'
   'Hora de finalización' = '2026-11-05T08:10:00Z'; 'Correo electrónico' = 'prueba@example.invalid'
-  Nombre = 'Persona ficticia'; 'Área' = 'Filtros'; 'Turno Filtros' = 'DIA'
-  'Fecha Filtros' = '2026-11-05'; 'Número de OT Filtros' = '450001'
-  'Actividad Filtros' = '10'; 'Avance Filtros' = '25'; 'Trabajadores Filtros' = '4'
-  'Horas Filtros' = '6'; 'Comentario Filtros' = 'Dato ficticio'
+  Nombre = 'Persona ficticia'; '¿Cuál es tu área de trabajo?' = 'Filtros'
+  '¿Cuál es tu turno? (Filtros)' = 'DIA'; '¿Qué fecha corresponde al reporte? (Filtros)' = '2026-11-05'
+  'Ingresa el número de OT (Filtros)' = '450001'; 'Ingresa el número de actividad (Filtros)' = '10'
+  '¿Cuál es el porcentaje de avance? (Filtros)' = '25'; '¿Cuántos trabajadores participaron? (Filtros)' = '4'
+  '¿Cuántas horas fueron trabajadas? (Filtros)' = '6'; 'Ingresa una reseña del trabajo realizado (Filtros)' = 'Dato ficticio'
+  'Carga una fotografía del ANTES del trabajo (Filtros)' = 'https://example.invalid/antes'
+  'Carga una fotografía del DURANTE del trabajo (Filtros)' = 'https://example.invalid/durante'
+  'Carga una fotografía del FINAL del trabajo (Filtros)' = 'https://example.invalid/final'
 }) } } | ConvertTo-Json -Depth 5
 Invoke-RestMethod http://127.0.0.1:8080/api/sync/forms -Method Post -Headers $headers -ContentType 'application/json' -Body $body
 ```
@@ -68,6 +72,16 @@ Ejecute las pruebas automatizadas con `python -m unittest discover -s tests -v`.
 3. Ejecute `docker compose up -d --build`.
 4. Configure Nginx como proxy inverso hacia `http://127.0.0.1:8086` con certificado TLS (HTTPS) y restricción de acceso adecuada, idealmente VPN.
 5. Ingrese al dominio configurado y seleccione **Actualizar Excel** para cargar el archivo de reportabilidad.
+
+### Preparación previa del secreto en la VPS
+
+Antes de fusionar o desplegar esta versión, genere un secreto de al menos 32 bytes fuera del repositorio y agregue `FORMS_SYNC_TOKEN=<secreto>` al archivo `/opt/shutdown-control/.env` existente, manteniendo permisos `600`. Compruebe sólo su presencia, sin imprimir su valor:
+
+```bash
+sudo grep -q '^FORMS_SYNC_TOKEN=..' /opt/shutdown-control/.env && echo 'FORMS_SYNC_TOKEN configurado'
+```
+
+Para compatibilidad con una VPS aún no preparada, Compose permite arrancar sin esa variable; en ese estado el dashboard y la importación manual siguen disponibles, pero `/api/sync/forms` falla de forma segura con HTTP `503`. No active el flujo de Power Automate hasta configurar el secreto en ambos extremos y contar con autorización ITS. Este cambio conserva el puerto interno `8080` y no modifica el puerto externo `2000` administrado por Nginx.
 
 ## GitHub, trazabilidad y despliegue automático
 

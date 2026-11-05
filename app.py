@@ -466,6 +466,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, (ROOT / 'app.js').read_bytes(), 'application/javascript')
         if path == '/style.css':
             return self.send(200, (ROOT / 'style.css').read_bytes(), 'text/css')
+        if path == '/img/logo.png':
+            return self.send(200, (ROOT / 'img' / 'logo.png').read_bytes(), 'image/png')
         self.send(404, 'No encontrado', 'text/plain')
 
     def do_POST(self):

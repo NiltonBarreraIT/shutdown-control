@@ -1,6 +1,7 @@
 let dataset={reports:[],ots:[],areas:{},counts:{}};
 let currentPage=1;
 const PAGE_SIZE=10;
+const expandedOts=new Set();
 const $=id=>document.getElementById(id);
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>n===null||n===undefined?'—':`${Math.round(n*10)/10}%`;
@@ -34,16 +35,17 @@ function render(){
 function filterOrders(resetPage=false){
  if(resetPage)currentPage=1;
  const q=$('search').value.toLowerCase(),area=$('area').value,shift=$('shift').value,attention=$('attention').value;
- const rows=dataset.reports.filter(r=>(!area||r.area===area)&&(!shift||r.shift===shift)&&(!q||[r.ot,r.activity,r.comment,r.reporter].join(' ').toLowerCase().includes(q))&&(!attention||(attention==='flag'?r.flags.length:r.progress===0))).sort((a,b)=>String(b.submitted_at??'').localeCompare(String(a.submitted_at??''))||String(b.id??'').localeCompare(String(a.id??''),undefined,{numeric:true}));
- const totalPages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE));
+ const matches=r=>(!area||r.area===area)&&(!shift||r.shift===shift)&&(!q||[r.ot,r.activity,r.comment,r.reporter].join(' ').toLowerCase().includes(q))&&(!attention||(attention==='flag'?r.flags.length:r.progress===0));
+ const groups=dataset.ots.map(parent=>{const reports=dataset.reports.filter(r=>r.ot===parent.ot).sort((a,b)=>String(b.submitted_at??'').localeCompare(String(a.submitted_at??''))||String(b.id??'').localeCompare(String(a.id??''),undefined,{numeric:true}));return {parent,reports,visibleReports:reports.filter(matches)}}).filter(group=>group.visibleReports.length).sort((a,b)=>String(b.parent.submitted_at??'').localeCompare(String(a.parent.submitted_at??''))||String(b.parent.id??'').localeCompare(String(a.parent.id??''),undefined,{numeric:true}));
+ const totalPages=Math.max(1,Math.ceil(groups.length/PAGE_SIZE));
  currentPage=Math.min(currentPage,totalPages);
  const start=(currentPage-1)*PAGE_SIZE;
- const visibleRows=rows.slice(start,start+PAGE_SIZE);
- $('ot-table').innerHTML=visibleRows.map(r=>{const reviewReason=r.flags.length?escapeHTML(r.flags.join(' · ')):'';return `<tr class="clickable" data-ot="${escapeHTML(r.ot)}"><td><span class="ot-id">${escapeHTML(r.ot)}</span><span class="secondary">Actividad ${escapeHTML(r.activity||'Sin indicar')}</span></td><td>${escapeHTML(r.area)}<span class="secondary">${escapeHTML(r.shift||'Sin turno')}</span></td><td><strong>${fmt(r.progress)}</strong><span class="progress"><i style="width:${Math.min(Math.max(r.progress??0,0),100)}%"></i></span></td><td>${escapeHTML(r.reporter||'Sin asignar')}<span class="secondary">${escapeHTML(shortDate(r.report_date))}</span></td><td><span class="status ${r.flags.length?'warn has-tooltip':''}"${r.flags.length?` tabindex="0" aria-label="Revisar: ${reviewReason}" data-tooltip="${reviewReason}"`:''}>${r.flags.length?'Revisar':'Registrada'}</span></td><td>›</td></tr>`}).join('')||'<tr><td colspan="6" class="empty">No hay OT que coincidan.</td></tr>';
- $('page-info').textContent=rows.length?`${start+1}–${Math.min(start+PAGE_SIZE,rows.length)} de ${rows.length} · Página ${currentPage} de ${totalPages}`:'0 resultados';
+ const visibleGroups=groups.slice(start,start+PAGE_SIZE);
+ $('ot-table').innerHTML=visibleGroups.map(({parent,reports,visibleReports})=>{const isOpen=expandedOts.has(parent.ot);const reviewReason=parent.flags.length?escapeHTML(parent.flags.join(' · ')):'';const activities=new Set(reports.map(r=>r.activity).filter(Boolean)).size;const parentRow=`<tr class="ot-parent"><td><span class="ot-id">OT ${escapeHTML(parent.ot)}</span><span class="secondary">${activities} actividad(es) · ${reports.length} reporte(s)</span></td><td>${escapeHTML(parent.area)}<span class="secondary">${escapeHTML(parent.shift||'Sin turno')}</span></td><td><strong>${fmt(parent.progress)}</strong><span class="progress"><i style="width:${Math.min(Math.max(parent.progress??0,0),100)}%"></i></span></td><td>${escapeHTML(parent.reporter||'Sin asignar')}<span class="secondary">Último: ${escapeHTML(shortDate(parent.submitted_at))}</span></td><td><span class="status ${parent.flags.length?'warn has-tooltip':''}"${parent.flags.length?` tabindex="0" aria-label="Revisar: ${reviewReason}" data-tooltip="${reviewReason}"`:''}>${parent.flags.length?'Revisar':'Registrada'}</span></td><td><button class="expand-ot" type="button" data-expand-ot="${escapeHTML(parent.ot)}" aria-expanded="${isOpen}" aria-label="${isOpen?'Ocultar':'Mostrar'} reportes de OT ${escapeHTML(parent.ot)}">${isOpen?'⌃':'⌄'}</button></td></tr>`;const childRows=isOpen?visibleReports.map(r=>{const childReason=r.flags.length?escapeHTML(r.flags.join(' · ')):'';return `<tr class="ot-child"><td><span class="activity-id">↳ Actividad ${escapeHTML(r.activity||'Sin indicar')}</span><span class="secondary">${escapeHTML(r.comment||'Sin comentario técnico')}</span></td><td>${escapeHTML(r.area)}<span class="secondary">${escapeHTML(r.shift||'Sin turno')}</span></td><td><strong>${fmt(r.progress)}</strong><span class="progress"><i style="width:${Math.min(Math.max(r.progress??0,0),100)}%"></i></span></td><td>${escapeHTML(r.reporter||'Sin asignar')}<span class="secondary">${escapeHTML(shortDate(r.submitted_at))}</span></td><td><span class="status ${r.flags.length?'warn has-tooltip':''}"${r.flags.length?` tabindex="0" aria-label="Revisar: ${childReason}" data-tooltip="${childReason}"`:''}>${r.flags.length?'Revisar':'Registrada'}</span></td><td></td></tr>`}).join(''):'';return parentRow+childRows}).join('')||'<tr><td colspan="6" class="empty">No hay OT que coincidan.</td></tr>';
+ $('page-info').textContent=groups.length?`${start+1}–${Math.min(start+PAGE_SIZE,groups.length)} de ${groups.length} OT · Página ${currentPage} de ${totalPages}`:'0 resultados';
  $('page-prev').disabled=currentPage===1;
  $('page-next').disabled=currentPage===totalPages;
- document.querySelectorAll('[data-ot]').forEach(el=>el.addEventListener('click',()=>detail(el.dataset.ot)));
+ document.querySelectorAll('[data-expand-ot]').forEach(button=>button.addEventListener('click',()=>{const ot=button.dataset.expandOt;expandedOts.has(ot)?expandedOts.delete(ot):expandedOts.add(ot);filterOrders()}));
 }
 function detail(ot){
  const entries=dataset.reports.filter(r=>r.ot===ot);

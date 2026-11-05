@@ -1,0 +1,13 @@
+[Unit]
+Description=Buscar actualizaciones de Shutdown Control cada minuto
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+RandomizedDelaySec=15s
+Persistent=true
+Unit=shutdown-control-update.service
+
+[Install]
+WantedBy=timers.target
+

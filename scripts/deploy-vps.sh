@@ -19,8 +19,18 @@ if [[ -n "$TARGET_SHA" ]]; then
     echo "ERROR: el commit solicitado no pertenece a origin/$BRANCH." >&2
     exit 1
   }
+  if [[ "$(git rev-parse HEAD)" == "$TARGET_SHA" ]]; then
+    echo "Sin cambios: ya esta desplegado el commit $TARGET_SHA."
+    exit 0
+  fi
   git checkout --detach "$TARGET_SHA"
 else
+  CURRENT_SHA="$(git rev-parse HEAD)"
+  REMOTE_SHA="$(git rev-parse "origin/$BRANCH")"
+  if [[ "$CURRENT_SHA" == "$REMOTE_SHA" ]]; then
+    echo "Sin cambios: ya esta desplegado el commit $CURRENT_SHA."
+    exit 0
+  fi
   git checkout "$BRANCH"
   git merge --ff-only "origin/$BRANCH"
 fi
@@ -31,4 +41,5 @@ docker compose up -d --build --remove-orphans
 DEPLOYED_SHA="$(git rev-parse HEAD)"
 printf '%s commit=%s branch=%s\n' "$(date --iso-8601=seconds)" "$DEPLOYED_SHA" "$BRANCH" | tee -a deploy-history.log
 docker compose ps
+
 

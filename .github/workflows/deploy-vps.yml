@@ -1,8 +1,8 @@
 name: Deploy VPS
 
 on:
-  push:
-    branches: [main]
+  # Temporalmente manual: la VPS se actualiza mediante systemd.
+  # Rehabilite el evento push cuando GitHub Actions vuelva a estar disponible.
   workflow_dispatch:
 
 concurrency:

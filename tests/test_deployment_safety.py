@@ -22,6 +22,18 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('users.html', dockerfile)
         self.assertIn('users.js', dockerfile)
 
+    def test_modules_share_one_compact_navigation(self):
+        dashboard = (ROOT / 'index.html').read_text(encoding='utf-8')
+        users = (ROOT / 'users.html').read_text(encoding='utf-8')
+        for page in (dashboard, users):
+            self.assertIn('PLATAFORMA · BHP SPENCE', page)
+            self.assertIn('Centro operacional', page)
+            self.assertIn('Usuarios', page)
+            self.assertIn('Sincronización operativa', page)
+        self.assertNotIn('Vista general</a>', dashboard)
+        self.assertNotIn('Órdenes de trabajo</a>', dashboard)
+        self.assertNotIn('Bitácora técnica</a>', dashboard)
+
 
 class MigrationSafetyTest(unittest.TestCase):
     def setUp(self):

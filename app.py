@@ -9,6 +9,7 @@ import re
 import secrets
 import sqlite3
 import unicodedata
+import xml.etree.ElementTree as ET
 from collections import Counter
 from contextlib import contextmanager
 from http import HTTPStatus
@@ -78,6 +79,20 @@ def db_conn():
     conn.execute('''CREATE TABLE IF NOT EXISTS login_attempts (
       id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL,
       client_ip TEXT NOT NULL, failed_at TEXT NOT NULL)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS plan_versions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, filename TEXT NOT NULL,
+      source_format TEXT NOT NULL, imported_at TEXT NOT NULL,
+      imported_by INTEGER NOT NULL, task_count INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      FOREIGN KEY(imported_by) REFERENCES users(id))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS plan_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, version_id INTEGER NOT NULL,
+      source_uid TEXT, wbs TEXT, ot TEXT NOT NULL, activity TEXT NOT NULL,
+      name TEXT NOT NULL, area TEXT, start_at TEXT, finish_at TEXT,
+      baseline_start TEXT, baseline_finish TEXT, duration_hours REAL,
+      weight REAL, critical INTEGER DEFAULT 0, milestone INTEGER DEFAULT 0,
+      predecessors TEXT, UNIQUE(version_id,ot,activity,source_uid),
+      FOREIGN KEY(version_id) REFERENCES plan_versions(id) ON DELETE CASCADE)''')
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(sync_log)')}
     if 'errors' not in columns:
         conn.execute('ALTER TABLE sync_log ADD COLUMN errors INTEGER DEFAULT 0')
@@ -457,6 +472,187 @@ def import_xlsx(blob, source='Carga manual'):
     return len(reports)
 
 
+PLAN_ALIASES = {
+    'uid': ('uid', 'id unico', 'unique id', 'id'),
+    'wbs': ('wbs', 'edt', 'outline number'),
+    'ot': ('ot', 'orden de trabajo', 'work order'),
+    'activity': ('op', 'actividad', 'activity', 'operation'),
+    'name': ('nombre', 'nombre de tarea', 'task name', 'tarea'),
+    'area': ('area',),
+    'start': ('comienzo', 'inicio', 'start'),
+    'finish': ('fin', 'termino', 'finish'),
+    'baseline_start': ('comienzo previsto', 'baseline start', 'inicio linea base'),
+    'baseline_finish': ('fin previsto', 'baseline finish', 'termino linea base'),
+    'duration': ('duracion', 'duration', 'duracion horas'),
+    'weight': ('peso', 'ponderacion', 'weight'),
+    'critical': ('critica', 'critico', 'critical'),
+    'milestone': ('hito', 'milestone'),
+    'predecessors': ('predecesoras', 'predecessors'),
+}
+
+
+def plan_boolean(item):
+    return normalized_key(item) in ('1', 'si', 'yes', 'true', 'verdadero')
+
+
+def plan_number(item):
+    parsed = number(item)
+    return parsed if parsed is not None and parsed >= 0 else None
+
+
+def plan_identifier(item, minimum_digits=0):
+    text = value(item)
+    if re.fullmatch(r'\d+\.0+', text):
+        text = text.split('.', 1)[0]
+    return text.zfill(minimum_digits) if text.isdigit() else text
+
+
+def plan_task(values):
+    name = value(values.get('name'))
+    ot = plan_identifier(values.get('ot'))
+    activity = plan_identifier(values.get('activity'), 3)
+    if not ot and name:
+        match = re.search(r'\bOT\s*[:#-]?\s*(\d{4,})\b', name, re.IGNORECASE)
+        ot = match.group(1) if match else ''
+    if not activity and name:
+        match = re.search(r'\b(?:OP|ACTIVIDAD)\s*[:#-]?\s*([A-Z0-9.-]+)\b',
+                          name, re.IGNORECASE)
+        activity = match.group(1) if match else ''
+    activity = plan_identifier(activity, 3)
+    if not name or not ot or not activity:
+        return None
+    duration = plan_number(values.get('duration'))
+    return {'source_uid': value(values.get('uid')), 'wbs': value(values.get('wbs')),
+            'ot': ot, 'activity': activity, 'name': name,
+            'area': value(values.get('area')), 'start_at': date_text(values.get('start')),
+            'finish_at': date_text(values.get('finish')),
+            'baseline_start': date_text(values.get('baseline_start')),
+            'baseline_finish': date_text(values.get('baseline_finish')),
+            'duration_hours': duration, 'weight': plan_number(values.get('weight')),
+            'critical': int(plan_boolean(values.get('critical'))),
+            'milestone': int(plan_boolean(values.get('milestone'))),
+            'predecessors': value(values.get('predecessors'))}
+
+
+def parse_plan_xlsx(blob):
+    workbook = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
+    rows = workbook.active.iter_rows(values_only=True)
+    headers = next(rows, None)
+    if not headers:
+        raise ValueError('El Excel no contiene encabezados')
+    index = {normalized_key(header): position for position, header in enumerate(headers)
+             if value(header)}
+    mapping = {}
+    for field, aliases in PLAN_ALIASES.items():
+        for alias in aliases:
+            if normalized_key(alias) in index:
+                mapping[field] = index[normalized_key(alias)]
+                break
+    missing = [label for field, label in (('ot', 'OT'), ('activity', 'OP/actividad'),
+                                           ('name', 'nombre de tarea'))
+               if field not in mapping]
+    if missing:
+        raise ValueError('Faltan columnas requeridas: ' + ', '.join(missing))
+    tasks = []
+    for row in rows:
+        task = plan_task({field: row[position] if position < len(row) else None
+                          for field, position in mapping.items()})
+        if task:
+            tasks.append(task)
+    return tasks
+
+
+def xml_child(node, name):
+    child = node.find(f'{{*}}{name}')
+    return child.text if child is not None and child.text is not None else ''
+
+
+def parse_plan_xml(blob):
+    try:
+        root = ET.fromstring(blob)
+    except ET.ParseError as exc:
+        raise ValueError(f'XML de Microsoft Project inválido: {exc}')
+    aliases = {}
+    for definition in root.findall('.//{*}ExtendedAttributes/{*}ExtendedAttribute'):
+        field_id, alias = xml_child(definition, 'FieldID'), xml_child(definition, 'Alias')
+        if field_id and alias:
+            aliases[field_id] = normalized_key(alias)
+    tasks = []
+    for node in root.findall('.//{*}Tasks/{*}Task'):
+        if xml_child(node, 'Summary') == '1':
+            continue
+        extended = {}
+        for item in node.findall('./{*}ExtendedAttribute'):
+            extended[aliases.get(xml_child(item, 'FieldID'), '')] = xml_child(item, 'Value')
+        def custom(field):
+            for alias in PLAN_ALIASES[field]:
+                if normalized_key(alias) in extended:
+                    return extended[normalized_key(alias)]
+            return ''
+        predecessors = ','.join(xml_child(item, 'PredecessorUID')
+                                for item in node.findall('./{*}PredecessorLink')
+                                if xml_child(item, 'PredecessorUID'))
+        task = plan_task({'uid': xml_child(node, 'UID'), 'wbs': xml_child(node, 'WBS'),
+                          'ot': custom('ot'), 'activity': custom('activity'),
+                          'area': custom('area'), 'weight': custom('weight'),
+                          'name': xml_child(node, 'Name'), 'start': xml_child(node, 'Start'),
+                          'finish': xml_child(node, 'Finish'),
+                          'baseline_start': xml_child(node.find('./{*}Baseline'), 'Start')
+                          if node.find('./{*}Baseline') is not None else '',
+                          'baseline_finish': xml_child(node.find('./{*}Baseline'), 'Finish')
+                          if node.find('./{*}Baseline') is not None else '',
+                          'critical': xml_child(node, 'Critical'),
+                          'milestone': xml_child(node, 'Milestone'),
+                          'predecessors': predecessors})
+        if task:
+            tasks.append(task)
+    return tasks
+
+
+def save_plan(tasks, filename, source_format, user_id):
+    if not tasks:
+        raise ValueError('No se encontraron tareas con OT, OP y nombre válidos')
+    keys = [(task['ot'], task['activity']) for task in tasks]
+    if len(keys) != len(set(keys)):
+        raise ValueError('La Carta Gantt contiene combinaciones OT/OP duplicadas')
+    with database() as conn:
+        conn.execute('UPDATE plan_versions SET active=0')
+        cursor = conn.execute('''INSERT INTO plan_versions
+          (filename,source_format,imported_at,imported_by,task_count,active)
+          VALUES (?,?,?,?,?,1)''', (filename[:255], source_format, utc_now(), user_id, len(tasks)))
+        version_id = cursor.lastrowid
+        conn.executemany('''INSERT INTO plan_tasks
+          (version_id,source_uid,wbs,ot,activity,name,area,start_at,finish_at,
+           baseline_start,baseline_finish,duration_hours,weight,critical,milestone,predecessors)
+          VALUES (:version_id,:source_uid,:wbs,:ot,:activity,:name,:area,:start_at,:finish_at,
+                  :baseline_start,:baseline_finish,:duration_hours,:weight,:critical,:milestone,:predecessors)''',
+                         ({**task, 'version_id': version_id} for task in tasks))
+    return version_id
+
+
+def plan_payload():
+    with database() as conn:
+        version = conn.execute('''SELECT plan_versions.*,users.username AS imported_by_name
+          FROM plan_versions JOIN users ON users.id=plan_versions.imported_by
+          WHERE plan_versions.active=1 ORDER BY plan_versions.id DESC LIMIT 1''').fetchone()
+        if not version:
+            return {'version': None, 'tasks': [], 'counts': {'tasks': 0, 'matched': 0,
+                    'unmatched': 0, 'critical': 0}}
+        tasks = [dict(row) for row in conn.execute('''SELECT plan_tasks.*,
+          reports.id AS report_id,reports.progress AS actual_progress,
+          reports.submitted_at AS last_report_at
+          FROM plan_tasks LEFT JOIN reports ON reports.id=(SELECT id FROM reports r
+            WHERE r.ot=plan_tasks.ot AND r.activity=plan_tasks.activity
+            ORDER BY r.submitted_at DESC,r.id DESC LIMIT 1)
+          WHERE plan_tasks.version_id=? ORDER BY plan_tasks.wbs,plan_tasks.id''',
+                                                   (version['id'],))]
+    matched = sum(task['report_id'] is not None for task in tasks)
+    return {'version': dict(version), 'tasks': tasks,
+            'counts': {'tasks': len(tasks), 'matched': matched,
+                       'unmatched': len(tasks) - matched,
+                       'critical': sum(task['critical'] for task in tasks)}}
+
+
 def payload():
     with database() as conn:
         records = [dict(r) for r in conn.execute('SELECT * FROM reports ORDER BY submitted_at DESC, id DESC')]
@@ -734,6 +930,12 @@ class Handler(BaseHTTPRequestHandler):
             if not self.role_allowed('admin'):
                 return
             return self.send(200, json.dumps(self.users_payload(), ensure_ascii=False))
+        if path == '/api/plan':
+            return self.send(200, json.dumps(plan_payload(), ensure_ascii=False))
+        if path == '/plan':
+            return self.send(200, (ROOT / 'plan.html').read_bytes(), 'text/html')
+        if path == '/plan.js':
+            return self.send(200, (ROOT / 'plan.js').read_bytes(), 'application/javascript')
         if path == '/users':
             if not self.role_allowed('admin'):
                 return
@@ -762,6 +964,27 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == '/api/users':
             return self.users_request()
+        if path == '/api/plan/import':
+            if not self.role_allowed('admin', 'planner'):
+                return
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= MAX_UPLOAD:
+                    return self.send(413, json.dumps({'error': 'Archivo vacío o mayor de 15 MB'}))
+                content_type = self.headers.get('Content-Type', '').split(';', 1)[0].lower()
+                filename = value(self.headers.get('X-Filename')) or 'carta-gantt'
+                blob = self.rfile.read(length)
+                if content_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+                    tasks, source_format = parse_plan_xlsx(blob), 'xlsx'
+                elif content_type in ('application/xml', 'text/xml'):
+                    tasks, source_format = parse_plan_xml(blob), 'project_xml'
+                else:
+                    return self.send(415, json.dumps({'error': 'Use Excel .xlsx o Microsoft Project XML'}))
+                version_id = save_plan(tasks, filename, source_format, self.user['id'])
+                self.send(200, json.dumps({'version_id': version_id, 'imported': len(tasks)}))
+            except (ValueError, ET.ParseError) as exc:
+                self.send(422, json.dumps({'error': str(exc)}, ensure_ascii=False))
+            return
         if path != '/api/import':
             return self.send(404, 'No encontrado', 'text/plain')
         if not self.role_allowed('admin', 'planner'):

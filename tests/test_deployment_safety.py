@@ -21,6 +21,8 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('login.html', dockerfile)
         self.assertIn('users.html', dockerfile)
         self.assertIn('users.js', dockerfile)
+        self.assertIn('plan.html', dockerfile)
+        self.assertIn('plan.js', dockerfile)
 
     def test_modules_share_one_compact_navigation(self):
         dashboard = (ROOT / 'index.html').read_text(encoding='utf-8')
@@ -29,6 +31,7 @@ class DeploymentConfigurationTest(unittest.TestCase):
             self.assertIn('PLATAFORMA · BHP SPENCE', page)
             self.assertIn('Centro operacional', page)
             self.assertIn('Usuarios', page)
+            self.assertIn('Planificación y Gantt', page)
             self.assertIn('Sincronización operativa', page)
         self.assertNotIn('Vista general</a>', dashboard)
         self.assertNotIn('Órdenes de trabajo</a>', dashboard)
@@ -78,7 +81,7 @@ class MigrationSafetyTest(unittest.TestCase):
         self.assertTrue({'errors', 'detail', 'pending', 'discrepancies'} <= columns)
         self.assertTrue({'reports', 'sync_log', 'pending_reports',
                          'ot_discrepancies', 'users', 'sessions',
-                         'login_attempts'} <= tables)
+                         'login_attempts', 'plan_versions', 'plan_tasks'} <= tables)
 
 
 if __name__ == '__main__':

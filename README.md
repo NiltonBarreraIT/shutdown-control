@@ -149,6 +149,14 @@ El login usa una cookie `HttpOnly` y `SameSite=Lax`, con expiración renovable p
 
 El token de Power Automate continúa siendo independiente y no utiliza las sesiones del dashboard.
 
+## Planificación y Carta Gantt
+
+El módulo independiente **Planificación y Gantt** (`/plan`) recibe una Carta Gantt en Excel `.xlsx` o en XML exportado desde Microsoft Project. Cada importación crea una versión nueva y conserva las anteriores en SQLite; sólo la última queda activa. La carga está restringida a administradores y planificadores, mientras que los demás roles pueden consultar la versión activa.
+
+Excel debe incluir como mínimo las columnas `OT`, `OP` o `Actividad`, y `Nombre de tarea`. También reconoce WBS/EDT, área, inicio, término, fechas de línea base, duración, peso, criticidad, hitos y predecesoras. Project XML puede obtener OT, OP, área y peso desde campos personalizados con esos alias; si OT y OP no están en campos personalizados, intenta reconocer textos como `OT 419433450 - OP 020` en el nombre de la tarea.
+
+El módulo vincula cada tarea con el último reporte real que tenga la misma combinación `OT + OP`. Muestra tareas vinculadas, sin reporte y críticas. No calcula todavía avance planificado, desviación ni proyección de término: esos cálculos se habilitarán después de validar la estructura y calendarios de una exportación real de Microsoft Project.
+
 ### Usuarios y permisos
 
 El menú principal agrupa Vista general, Órdenes de trabajo y Bitácora dentro de **Centro operacional** (`/`). La cuenta administradora dispone además del módulo independiente **Usuarios** (`/users`), desde donde puede crear cuentas identificadas por correo electrónico, cambiar roles, activar o bloquear accesos y restablecer contraseñas. Los correos se normalizan en minúsculas y no pueden repetirse. Este módulo no forma parte del dashboard operacional y el servidor impide acceder a su página, JavaScript y API sin rol de administrador. Una cuenta bloqueada pierde inmediatamente todas sus sesiones. El sistema impide desactivar o degradar la propia cuenta administradora y también impide dejar la plataforma sin administradores activos.

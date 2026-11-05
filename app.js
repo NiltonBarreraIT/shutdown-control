@@ -32,7 +32,7 @@ function render(){
 function filterOrders(){
  const q=$('search').value.toLowerCase(),area=$('area').value,shift=$('shift').value,attention=$('attention').value;
  const rows=dataset.ots.filter(r=>(!area||r.area===area)&&(!shift||r.shift===shift)&&(!q||[r.ot,r.activity,r.comment,r.reporter].join(' ').toLowerCase().includes(q))&&(!attention||(attention==='flag'?r.flags.length:r.progress===0)));
- $('ot-table').innerHTML=rows.map(r=>`<tr class="clickable" data-ot="${escapeHTML(r.ot)}"><td><span class="ot-id">${escapeHTML(r.ot)}</span><span class="secondary">Actividad ${escapeHTML(r.activity||'Sin indicar')}</span></td><td>${escapeHTML(r.area)}<span class="secondary">${escapeHTML(r.shift||'Sin turno')}</span></td><td><strong>${fmt(r.progress)}</strong><span class="progress"><i style="width:${Math.min(Math.max(r.progress??0,0),100)}%"></i></span></td><td>${escapeHTML(r.reporter||'Sin asignar')}<span class="secondary">${escapeHTML(shortDate(r.report_date))}</span></td><td><span class="status ${r.flags.length?'warn':''}">${r.flags.length?'Revisar':'Registrada'}</span></td><td>›</td></tr>`).join('')||'<tr><td colspan="6" class="empty">No hay OT que coincidan.</td></tr>';
+ $('ot-table').innerHTML=rows.map(r=>{const reviewReason=r.flags.length?escapeHTML(r.flags.join(' · ')):'';return `<tr class="clickable" data-ot="${escapeHTML(r.ot)}"><td><span class="ot-id">${escapeHTML(r.ot)}</span><span class="secondary">Actividad ${escapeHTML(r.activity||'Sin indicar')}</span></td><td>${escapeHTML(r.area)}<span class="secondary">${escapeHTML(r.shift||'Sin turno')}</span></td><td><strong>${fmt(r.progress)}</strong><span class="progress"><i style="width:${Math.min(Math.max(r.progress??0,0),100)}%"></i></span></td><td>${escapeHTML(r.reporter||'Sin asignar')}<span class="secondary">${escapeHTML(shortDate(r.report_date))}</span></td><td><span class="status ${r.flags.length?'warn has-tooltip':''}"${r.flags.length?` tabindex="0" aria-label="Revisar: ${reviewReason}" data-tooltip="${reviewReason}"`:''}>${r.flags.length?'Revisar':'Registrada'}</span></td><td>›</td></tr>`}).join('')||'<tr><td colspan="6" class="empty">No hay OT que coincidan.</td></tr>';
  document.querySelectorAll('[data-ot]').forEach(el=>el.addEventListener('click',()=>detail(el.dataset.ot)));
 }
 function detail(ot){
@@ -43,6 +43,5 @@ function detail(ot){
 }
 async function load(){try{const r=await fetch('/api/status');if(!r.ok)throw Error('No fue posible consultar datos');dataset=await r.json();render()}catch(e){toast(e.message,true)}}
 ['search','area','shift','attention'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',filterOrders));
-$('reload').addEventListener('click',load);$('close').addEventListener('click',()=>$('detail').close());
-$('file').addEventListener('change',async e=>{const file=e.target.files[0];if(!file)return;try{const r=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'},body:file});const result=await r.json();if(!r.ok)throw Error(result.error||'Error de carga');toast(`Se procesaron ${result.imported} reportes`);await load()}catch(err){toast(err.message,true)}e.target.value=''});
+$('close').addEventListener('click',()=>$('detail').close());
 load();

@@ -11,6 +11,8 @@ Group=shutdown-deploy
 WorkingDirectory=/opt/shutdown-control
 Environment=APP_DIR=/opt/shutdown-control
 Environment=DEPLOY_BRANCH=main
+Environment=HOME=/var/lib/shutdown-control-deploy
+StateDirectory=shutdown-control-deploy
 ExecStart=/usr/bin/bash /opt/shutdown-control/scripts/deploy-vps.sh
 
 # Endurecimiento básico sin impedir Git ni Docker.

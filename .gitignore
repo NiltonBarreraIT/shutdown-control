@@ -8,5 +8,6 @@ data/
 .idea/
 .vscode/
 .docker/
+.lesshst
 *.log
 

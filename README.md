@@ -10,12 +10,61 @@ Primera versión operativa para seguimiento de órdenes de trabajo a partir del 
 - Visualización de reseñas técnicas y enlaces a fotografías (dependen de permisos Microsoft 365).
 - Alertas de datos inconsistentes y registros sin avance.
 - Persistencia SQLite y actualización por ID de formulario (reimportar no duplica reportes).
+- API REST para Power Automate con UPSERT por Id, validación y estado de última sincronización.
 - Acceso con autenticación básica, para utilizar exclusivamente detrás de HTTPS.
+
+## Sincronización desde Power Automate
+
+`POST /api/sync/forms` recibe exactamente el objeto producido por Excel Online (Business):
+
+```json
+{"body":{"value":[{"Id":"101","Área":"Filtros","Número de OT Filtros":"450001"}]}}
+```
+
+Los nombres de las columnas se normalizan ignorando mayúsculas, tildes y puntuación. Los campos operacionales se localizan por su nombre y por el área seleccionada; no se usa el orden de las columnas. Las áreas admitidas son Filtros, Molibdeno, Tranque y Flotación. Cada fila debe incluir `Id`, área y OT. La API acepta hasta 2 MiB y 5.000 filas por solicitud por defecto. Estos límites pueden reducirse mediante `SYNC_MAX_BYTES` y `SYNC_MAX_RECORDS`.
+
+La autenticación de esta ruta es independiente de la contraseña del dashboard. Genere un secreto aleatorio (por ejemplo, con `openssl rand -hex 32`), configúrelo sólo en el `.env` de cada entorno y envíelo desde Power Automate como encabezado:
+
+```text
+Authorization: Bearer <FORMS_SYNC_TOKEN>
+Content-Type: application/json
+```
+
+No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acciones o logs. La respuesta informa `processed`, `upserted` y hasta 20 errores de validación por posición, sin devolver datos personales. Las filas válidas se guardan aunque otra fila del lote sea inválida. El dashboard muestra fecha UTC, fuente, cantidad y errores de la última sincronización.
+
+### Prueba local con datos ficticios
+
+En PowerShell, sin modificar el Excel ni conectarse a Microsoft 365:
+
+```powershell
+$env:DASHBOARD_USER = 'local'
+$env:DASHBOARD_PASSWORD = 'clave-local-no-productiva'
+$env:FORMS_SYNC_TOKEN = 'token-local-largo-no-productivo'
+$env:DATABASE_PATH = "$PWD/data/prueba-local.db"
+python app.py
+```
+
+En otra consola:
+
+```powershell
+$headers = @{ Authorization = 'Bearer token-local-largo-no-productivo' }
+$body = @{ body = @{ value = @(@{
+  Id = 'TEST-101'; 'Hora de inicio' = '2026-11-05T08:00:00Z'
+  'Hora de finalización' = '2026-11-05T08:10:00Z'; 'Correo electrónico' = 'prueba@example.invalid'
+  Nombre = 'Persona ficticia'; 'Área' = 'Filtros'; 'Turno Filtros' = 'DIA'
+  'Fecha Filtros' = '2026-11-05'; 'Número de OT Filtros' = '450001'
+  'Actividad Filtros' = '10'; 'Avance Filtros' = '25'; 'Trabajadores Filtros' = '4'
+  'Horas Filtros' = '6'; 'Comentario Filtros' = 'Dato ficticio'
+}) } } | ConvertTo-Json -Depth 5
+Invoke-RestMethod http://127.0.0.1:8080/api/sync/forms -Method Post -Headers $headers -ContentType 'application/json' -Body $body
+```
+
+Ejecute las pruebas automatizadas con `python -m unittest discover -s tests -v`. Todas usan una base temporal y datos ficticios.
 
 ## Instalación VPS
 
 1. Copie esta carpeta a la VPS.
-2. Duplique `.env.example` como `.env` y establezca credenciales únicas y robustas. No reutilice su contraseña Microsoft 365.
+2. Duplique `.env.example` como `.env` y establezca credenciales y `FORMS_SYNC_TOKEN` únicos y robustos. El token no debe ser la contraseña del dashboard ni una credencial Microsoft 365.
 3. Ejecute `docker compose up -d --build`.
 4. Configure Nginx como proxy inverso hacia `http://127.0.0.1:8086` con certificado TLS (HTTPS) y restricción de acceso adecuada, idealmente VPN.
 5. Ingrese al dominio configurado y seleccione **Actualizar Excel** para cargar el archivo de reportabilidad.

@@ -79,7 +79,7 @@ Ejecute las pruebas automatizadas con `python -m unittest discover -s tests -v`.
 1. Copie esta carpeta a la VPS.
 2. Duplique `.env.example` como `.env` y establezca credenciales y `FORMS_SYNC_TOKEN` únicos y robustos. El token no debe ser la contraseña del dashboard ni una credencial Microsoft 365.
 3. Ejecute `docker compose up -d --build`.
-4. Configure Nginx para publicar el servicio en el puerto externo `2000`, con certificado TLS (HTTPS) y restricción de acceso adecuada, idealmente VPN. El contenedor mantiene el puerto interno `8080`.
+4. Configure Nginx como proxy inverso hacia `http://127.0.0.1:2000`, con certificado TLS (HTTPS) y restricción de acceso adecuada, idealmente VPN. Docker conserva exactamente el enlace local `127.0.0.1:2000:8080`: puerto local `2000` y puerto interno del contenedor `8080`.
 5. Ingrese al dominio configurado y seleccione **Actualizar Excel** para cargar el archivo de reportabilidad.
 
 ### Preparación previa del secreto en la VPS
@@ -90,7 +90,7 @@ Antes de fusionar o desplegar esta versión, genere un secreto de al menos 32 by
 sudo grep -q '^FORMS_SYNC_TOKEN=..' /opt/shutdown-control/.env && echo 'FORMS_SYNC_TOKEN configurado'
 ```
 
-Para compatibilidad con una VPS aún no preparada, Compose permite arrancar sin esa variable; en ese estado el dashboard y la importación manual siguen disponibles, pero `/api/sync/forms` falla de forma segura con HTTP `503`. No active el flujo de Power Automate hasta configurar el secreto en ambos extremos y contar con autorización ITS. Este cambio conserva el puerto interno `8080` y no modifica el puerto externo `2000` administrado por Nginx.
+Para compatibilidad con una VPS aún no preparada, Compose permite arrancar sin esa variable; en ese estado el dashboard y la importación manual siguen disponibles, pero `/api/sync/forms` falla de forma segura con HTTP `503`. No active el flujo de Power Automate hasta configurar el secreto en ambos extremos y contar con autorización ITS. Este cambio conserva el puerto interno `8080` y el enlace local `127.0.0.1:2000` usado por Nginx.
 
 ## GitHub, trazabilidad y despliegue automático
 
@@ -135,7 +135,7 @@ El usuario usado por GitHub Actions debe poder leer `/opt/shutdown-control`, eje
 
 No use `StrictHostKeyChecking=no` ni guarde `.env`, contraseñas o llaves en el repositorio. `deploy-history.log` en la VPS registra fecha y commit de cada despliegue; el historial de Actions conserva además actor, resultado y logs. Si la VPS contiene cambios manuales, el despliegue se detiene para proteger la trazabilidad.
 
-No exponga directamente el puerto interno del contenedor a internet; el acceso externo establecido es el puerto `2000` administrado por Nginx. La autenticación básica del MVP no proporciona permisos granulares ni SSO; para producción corporativa se recomienda Entra ID, VPN, controles de auditoría y políticas de retención.
+No exponga directamente el puerto interno del contenedor ni el enlace local `127.0.0.1:2000` a internet; el acceso público debe permanecer administrado por Nginx. La autenticación básica del MVP no proporciona permisos granulares ni SSO; para producción corporativa se recomienda Entra ID, VPN, controles de auditoría y políticas de retención.
 
 ## Integración OneDrive — etapa pendiente
 

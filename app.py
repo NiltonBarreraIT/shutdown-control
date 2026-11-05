@@ -164,6 +164,11 @@ FIELD_RULES = {
     'photo_during': (('foto', 'fotografia', 'imagen'), ('durante',)),
     'photo_after': (('foto', 'fotografia', 'imagen'), ('final', 'despues'),),
 }
+FIELD_EXCLUDES = {
+    # Forms includes "OT" in the activity and progress questions too. Those
+    # columns must never be considered candidates for the parent work order.
+    'ot': ('actividad', 'avance', 'porcentaje'),
+}
 
 
 class PendingReport(ValueError):
@@ -173,7 +178,7 @@ class PendingReport(ValueError):
         self.area = area
 
 
-def find_value(index, aliases=(), groups=(), area=''):
+def find_value(index, aliases=(), groups=(), area='', excludes=()):
     for alias in aliases:
         if normalized_key(alias) in index:
             return index[normalized_key(alias)]
@@ -181,6 +186,8 @@ def find_value(index, aliases=(), groups=(), area=''):
     candidates = []
     for key, item in index.items():
         padded = f' {key} '
+        if any(f' {normalized_key(term)} ' in padded for term in excludes):
+            continue
         if groups and all(any(f' {normalized_key(term)} ' in padded
                               for term in alternatives)
                           for alternatives in groups):
@@ -207,7 +214,8 @@ def normalize_json_record(record):
     area = area_lookup.get(normalized_key(area_raw))
     if not area:
         raise ValueError('área inválida; use Filtros, Molibdeno, Tranque o Flotación')
-    fields = {name: find_value(index, groups=groups, area=area)
+    fields = {name: find_value(index, groups=groups, area=area,
+                               excludes=FIELD_EXCLUDES.get(name, ()))
               for name, groups in FIELD_RULES.items()}
     ot = value(fields['ot'])
     if not ot:
@@ -237,7 +245,7 @@ UPSERT_REPORT = '''INSERT INTO reports VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
   ON CONFLICT(id) DO UPDATE SET
   start_at=excluded.start_at, submitted_at=excluded.submitted_at,
   reporter=excluded.reporter, email=excluded.email, area=excluded.area,
-  shift=excluded.shift, report_date=excluded.report_date, ot=reports.ot,
+  shift=excluded.shift, report_date=excluded.report_date, ot=excluded.ot,
   activity=excluded.activity, progress=excluded.progress,
   workers=excluded.workers, hours=excluded.hours, comment=excluded.comment,
   photos=excluded.photos, flags=excluded.flags, imported_at=excluded.imported_at'''
@@ -249,8 +257,18 @@ def preserve_registered_ots(conn, reports, source, observed_at):
         existing = conn.execute('SELECT ot FROM reports WHERE id=?', (report[0],)).fetchone()
         if existing and value(existing['ot']) and value(existing['ot']) != report[8]:
             received_ot = report[8]
+            old_ot = value(existing['ot'])
+            old_number = number(old_ot)
+            received_text = value(received_ot)
+            # Repair records created by the previous ambiguous header match,
+            # which stored a progress percentage (0-100) as the OT. Normal OT
+            # changes remain immutable and auditable below.
+            if (old_number is not None and 0 <= old_number <= 100 and
+                    received_text.isdigit() and len(received_text) >= 6):
+                adjusted.append(report)
+                continue
             report = list(report)
-            report[8] = value(existing['ot'])
+            report[8] = old_ot
             try:
                 flags = json.loads(report[15] or '[]')
             except (TypeError, json.JSONDecodeError):

@@ -127,6 +127,31 @@ class SyncApiTest(unittest.TestCase):
                               f'https://example.invalid/{area}/durante',
                               f'https://example.invalid/{area}/final'], json.loads(item['photos']))
 
+    def test_ot_question_is_not_confused_with_progress_question(self):
+        record = row('REAL-HEADERS', 'Molibdeno', progress='50')
+        for key in tuple(record):
+            if '(Molibdeno)' in key and ('número de OT' in key or 'porcentaje de avance' in key):
+                del record[key]
+        record['¿Cuál es la OT que vas a reportar?\u00a0(Molibdeno)'] = '621315053'
+        record['¿Cuál es el avance de la OT?\u00a0(Molibdeno)'] = '50'
+        status, result = self.request({'body': {'value': [record]}})
+        self.assertEqual((200, 1), (status, result['upserted']))
+        with app.database() as conn:
+            stored = conn.execute(
+                "SELECT ot,progress FROM reports WHERE id='REAL-HEADERS'").fetchone()
+        self.assertEqual(('621315053', 50.0), tuple(stored))
+
+    def test_repairs_progress_value_previously_saved_as_ot(self):
+        self.request({'body': {'value': [set_ot(row('REPAIR-OT'), '100')]}})
+        status, result = self.request({'body': {'value': [
+            set_ot(row('REPAIR-OT', progress='100'), '62256002')]}})
+        self.assertEqual((200, 0), (status, result['discrepancies']))
+        with app.database() as conn:
+            stored = conn.execute(
+                "SELECT ot,progress,flags FROM reports WHERE id='REPAIR-OT'").fetchone()
+        self.assertEqual(('62256002', 100.0, []),
+                         (stored['ot'], stored['progress'], json.loads(stored['flags'])))
+
     def test_rejects_bad_structure_and_records_error(self):
         status, result = self.request({'value': [row()]})
         self.assertEqual(400, status)

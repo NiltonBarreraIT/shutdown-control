@@ -141,6 +141,34 @@ class SyncApiTest(unittest.TestCase):
                 "SELECT ot,progress FROM reports WHERE id='REAL-HEADERS'").fetchone()
         self.assertEqual(('621315053', 50.0), tuple(stored))
 
+    def test_activity_number_uses_the_question_for_the_selected_area(self):
+        activity_headers = {
+            'Filtros': '¿Cuál es el número de actividad? (Filtros)',
+            'Molibdeno': '¿Cuál es el número de actividad de la OT? (Molibdeno)',
+            'Tranque': '¿Cuál en el número de la actividad? (Tranque)',
+            'Flotación': '¿Cuál es el número de la actividad? (Flotación)',
+        }
+        rows = []
+        expected = []
+        for index, area in enumerate(AREAS, 1):
+            record = row(f'ACTIVITY-{index}', area)
+            suffix = f'({area})'
+            for key in tuple(record):
+                if suffix in key and 'actividad' in key.casefold():
+                    del record[key]
+            activity = f'{index}020'
+            record[activity_headers[area]] = activity
+            rows.append(record)
+            expected.append((area, f'45000{index}', activity))
+
+        status, result = self.request({'body': {'value': rows}})
+        self.assertEqual((200, 4), (status, result['upserted']))
+        with app.database() as conn:
+            stored = [tuple(item) for item in conn.execute(
+                '''SELECT area,ot,activity FROM reports
+                   WHERE id LIKE 'ACTIVITY-%' ORDER BY id''')]
+        self.assertEqual(expected, stored)
+
     def test_repairs_progress_value_previously_saved_as_ot(self):
         self.request({'body': {'value': [set_ot(row('REPAIR-OT'), '100')]}})
         status, result = self.request({'body': {'value': [

@@ -7,6 +7,10 @@ services:
       DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?Defina contraseña en .env}
       # Backward-compatible startup: without a token the sync endpoint fails closed with HTTP 503.
       FORMS_SYNC_TOKEN: ${FORMS_SYNC_TOKEN:-}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-5}
+      LOGIN_LOCK_MINUTES: ${LOGIN_LOCK_MINUTES:-15}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       DATABASE_PATH: /data/shutdown.db
       HOST: 0.0.0.0
       PORT: 8080

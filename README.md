@@ -11,7 +11,7 @@ Primera versión operativa para seguimiento de órdenes de trabajo a partir del 
 - Alertas de datos inconsistentes y registros sin avance.
 - Persistencia SQLite y actualización por ID de formulario (reimportar no duplica reportes).
 - API REST para Power Automate con UPSERT por Id, validación y estado de última sincronización.
-- Acceso con autenticación básica, para utilizar exclusivamente detrás de HTTPS.
+- Login visual con contraseña protegida mediante PBKDF2, sesiones con expiración, bloqueo temporal por intentos fallidos y permisos por rol.
 
 ## Sincronización desde Power Automate
 
@@ -135,13 +135,38 @@ El usuario usado por GitHub Actions debe poder leer `/opt/shutdown-control`, eje
 
 No use `StrictHostKeyChecking=no` ni guarde `.env`, contraseñas o llaves en el repositorio. `deploy-history.log` en la VPS registra fecha y commit de cada despliegue; el historial de Actions conserva además actor, resultado y logs. Si la VPS contiene cambios manuales, el despliegue se detiene para proteger la trazabilidad.
 
-No exponga directamente el puerto interno del contenedor ni el enlace local `127.0.0.1:2000` a internet; el acceso público debe permanecer administrado por Nginx. La autenticación básica del MVP no proporciona permisos granulares ni SSO; para producción corporativa se recomienda Entra ID, VPN, controles de auditoría y políticas de retención.
+No exponga directamente el puerto interno del contenedor ni el enlace local `127.0.0.1:2000` a internet; el acceso público debe permanecer administrado por Nginx. El login local todavía no proporciona permisos granulares ni SSO; para producción corporativa se recomienda Entra ID, VPN, controles de auditoría y políticas de retención.
 
-## Integración OneDrive — etapa pendiente
+## Login de la plataforma
 
-Actualmente **no está conectada**. La cuenta corporativa con acceso al archivo no equivale a autorización para integrar una app. Solicitar a TI de ITS el registro/aprobación de una aplicación Microsoft Entra ID con permisos de lectura mínimos para el documento correspondiente y OAuth delegado (o acceso de aplicación controlado si lo aprueban). La sincronización futura consultará Microsoft Graph, descargará una copia del Excel autorizado y llamará a la función `import_xlsx`. No introducir usuarios ni contraseñas de Microsoft en scripts o `.env`.
+En el primer arranque, `DASHBOARD_USER` y `DASHBOARD_PASSWORD` crean la cuenta administradora inicial. La contraseña se almacena en SQLite únicamente como una derivación PBKDF2 con salt aleatoria. En los reinicios posteriores, cambiar `DASHBOARD_PASSWORD` en `.env` actualiza la contraseña de esa cuenta y revoca sus sesiones anteriores.
 
-Los reportes pueden contener datos personales, reseñas operacionales y fotografías de faena. Verifique la autorización de BHP/ITS para replicar esos datos fuera de Microsoft 365 antes de cargar información real a una VPS.
+El login usa una cookie `HttpOnly` y `SameSite=Lax`, con expiración renovable por inactividad. En producción `SESSION_COOKIE_SECURE` debe permanecer en `true` y el acceso debe realizarse exclusivamente mediante HTTPS. Para una prueba local por HTTP se puede establecer temporalmente `SESSION_COOKIE_SECURE=false`; no utilice ese valor en la VPS.
+
+- `SESSION_IDLE_MINUTES`: duración de inactividad permitida; predeterminado `30`.
+- `LOGIN_MAX_ATTEMPTS`: intentos fallidos antes del bloqueo; predeterminado `5`.
+- `LOGIN_LOCK_MINUTES`: duración del bloqueo; predeterminado `15`.
+
+El token de Power Automate continúa siendo independiente y no utiliza las sesiones del dashboard.
+
+### Usuarios y permisos
+
+La cuenta administradora dispone de la sección **Usuarios**, desde donde puede crear cuentas, cambiar roles, activar o bloquear accesos y restablecer contraseñas. Una cuenta bloqueada pierde inmediatamente todas sus sesiones. El sistema impide desactivar o degradar la propia cuenta administradora y también impide dejar la plataforma sin administradores activos.
+
+| Rol | Acceso |
+| --- | --- |
+| Administrador | Dashboard, importación manual y administración de usuarios. |
+| Planificador | Dashboard e importación manual. |
+| Supervisor | Consulta completa del dashboard. |
+| Visualizador | Consulta de solo lectura. |
+
+La contraseña de la cuenta administradora inicial se cambia exclusivamente mediante `DASHBOARD_PASSWORD` en `.env`. Las contraseñas de las demás cuentas pueden restablecerse desde la sección Usuarios; al hacerlo, sus sesiones abiertas se revocan.
+
+## Integración oficial mediante Power Automate
+
+Power Automate es el mecanismo oficial de sincronización con el archivo de reportabilidad. El flujo obtiene las filas mediante Excel Online (Business) y las envía a `POST /api/sync/forms` usando el token independiente descrito anteriormente.
+
+Los reportes pueden contener datos personales, reseñas operacionales y fotografías de faena. Verifique la autorización de BHP/ITS para procesar y replicar esos datos en la VPS antes de activar el flujo con información real.
 
 ## Criterios de cálculo
 
@@ -153,4 +178,4 @@ Los reportes pueden contener datos personales, reseñas operacionales y fotograf
 
 ## Próxima fase
 
-Obtener URL del archivo original, responsable de TI y aprobación para Graph. Después: sincronización automática, roles/SSO, plan maestro de OT y ponderaciones, criticidad, fechas planificadas, alertas por SLA y reportes por turno.
+Incorporar el plan maestro de OT y sus ponderaciones para calcular avance físico planificado versus reportado. Después: criticidad, fechas planificadas, alertas por SLA y reportes por turno.

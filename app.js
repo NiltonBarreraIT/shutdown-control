@@ -34,7 +34,9 @@ const reviewReasons=r=>r.flags.map(flag=>{
   return flag;
 });
 function render(){
-  const {reports,ots,areas,counts,last_sync}=dataset;
+  const {reports,ots,areas,counts,last_sync,current_user}=dataset;
+  $('account-name').textContent=current_user?`${current_user.username} · ${current_user.role_label}`:'';
+  const isAdmin=current_user?.role==='admin';$('users').classList.toggle('hidden',!isAdmin);$('users-nav').classList.toggle('hidden',!isAdmin);if(isAdmin)loadUsers();
   $('n-ots').textContent=counts.ots??0;$('n-reports').textContent=counts.reports??0;$('n-flags').textContent=counts.flagged??0;
   const valid=ots.filter(r=>r.progress!==null&&r.progress!==undefined);
   $('n-progress').textContent=valid.length?fmt(valid.reduce((s,r)=>s+r.progress,0)/valid.length):'—';
@@ -46,6 +48,14 @@ function render(){
   filterOrders();
   $('log').innerHTML=reports.slice(0,12).map(r=>`<article class="log-item"><strong>OT ${escapeHTML(r.ot)}</strong>${r.flags.length?'<span class="status warn">Revisar</span>':''}<p>${escapeHTML(r.comment||'Sin reseña técnica ingresada.')}</p><small>${escapeHTML(r.area)} · ${escapeHTML(r.reporter)} · ${escapeHTML(shortDate(r.submitted_at))}</small></article>`).join('')||'<p class="empty">Aún no hay reportes.</p>';
 }
+const roleNames={admin:'Administrador',planner:'Planificador',supervisor:'Supervisor',viewer:'Visualizador'};
+function renderUsers(data){
+ $('users-table').innerHTML=data.users.map(user=>`<tr data-user-id="${user.id}"><td><strong>${escapeHTML(user.username)}</strong>${user.username===dataset.current_user.username?'<span class="secondary">Tu cuenta</span>':''}</td><td><select class="user-role">${Object.entries(roleNames).map(([key,label])=>`<option value="${key}"${user.role===key?' selected':''}>${label}</option>`).join('')}</select></td><td><label class="user-active"><input class="user-enabled" type="checkbox"${user.active?' checked':''}> Activo</label></td><td>${escapeHTML(shortDate(user.last_login_at))}</td><td><div class="user-actions"><button type="button" data-save-user>Guardar</button><input class="user-password" type="password" minlength="12" placeholder="Nueva contraseña"><button type="button" data-reset-user>Restablecer</button></div></td></tr>`).join('')||'<tr><td colspan="5" class="empty">No hay usuarios.</td></tr>';
+ document.querySelectorAll('[data-save-user]').forEach(button=>button.addEventListener('click',async()=>{const row=button.closest('tr');await usersAction({action:'update',user_id:Number(row.dataset.userId),role:row.querySelector('.user-role').value,active:row.querySelector('.user-enabled').checked})}));
+ document.querySelectorAll('[data-reset-user]').forEach(button=>button.addEventListener('click',async()=>{const row=button.closest('tr'),password=row.querySelector('.user-password').value;if(!password){toast('Ingrese una nueva contraseña',true);return}await usersAction({action:'reset_password',user_id:Number(row.dataset.userId),password})}));
+}
+async function loadUsers(){try{const response=await fetch('/api/users');if(response.status===401){location.href='/login';return}const data=await response.json();if(!response.ok)throw Error(data.error||'No fue posible cargar usuarios');renderUsers(data)}catch(error){toast(error.message,true)}}
+async function usersAction(body){try{const response=await fetch('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});if(response.status===401){location.href='/login';return}const data=await response.json();if(!response.ok)throw Error(data.error||'No fue posible actualizar usuarios');renderUsers(data);toast('Usuarios actualizados')}catch(error){toast(error.message,true)}}
 function filterOrders(resetPage=false){
  if(resetPage)currentPage=1;
  const q=$('search').value.toLowerCase(),area=$('area').value,shift=$('shift').value,attention=$('attention').value;
@@ -73,4 +83,5 @@ async function load(){try{const r=await fetch('/api/status');if(!r.ok)throw Erro
 $('page-prev').addEventListener('click',()=>{currentPage--;filterOrders()});
 $('page-next').addEventListener('click',()=>{currentPage++;filterOrders()});
 $('close').addEventListener('click',()=>$('detail').close());
+$('user-create').addEventListener('submit',async event=>{event.preventDefault();await usersAction({action:'create',username:$('new-username').value,password:$('new-password').value,role:$('new-role').value});event.target.reset()});
 load();

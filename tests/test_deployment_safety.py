@@ -62,7 +62,8 @@ class MigrationSafetyTest(unittest.TestCase):
         self.assertEqual((1, 'Versión anterior'), tuple(old_log))
         self.assertTrue({'errors', 'detail', 'pending', 'discrepancies'} <= columns)
         self.assertTrue({'reports', 'sync_log', 'pending_reports',
-                         'ot_discrepancies'} <= tables)
+                         'ot_discrepancies', 'users', 'sessions',
+                         'login_attempts'} <= tables)
 
 
 if __name__ == '__main__':

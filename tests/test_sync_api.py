@@ -4,6 +4,7 @@ import tempfile
 import threading
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -11,6 +12,11 @@ import app
 
 
 AREAS = ('Filtros', 'Molibdeno', 'Tranque', 'Flotación')
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def row(record_id='101', area='Filtros', progress='25'):
@@ -63,6 +69,7 @@ class SyncApiTest(unittest.TestCase):
         app.SYNC_TOKEN = 'token-de-prueba-no-real'
         app.USER = 'dashboard'
         app.PASSWORD = 'clave-de-prueba'
+        app.COOKIE_SECURE = False
         self.server = app.ThreadingHTTPServer(('127.0.0.1', 0), app.Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -85,6 +92,37 @@ class SyncApiTest(unittest.TestCase):
                 return response.status, json.load(response)
         except urllib.error.HTTPError as exc:
             return exc.code, json.load(exc)
+
+    def login_cookie(self, username='dashboard', password='clave-de-prueba'):
+        body = urllib.parse.urlencode({'username': username, 'password': password}).encode()
+        request = urllib.request.Request(
+            self.base + '/login', data=body, method='POST',
+            headers={'Content-Type': 'application/x-www-form-urlencoded'})
+        opener = urllib.request.build_opener(NoRedirect())
+        try:
+            opener.open(request)
+        except urllib.error.HTTPError as exc:
+            response = exc
+        else:
+            self.fail('El login debía responder con redirección')
+        self.assertEqual(303, response.code)
+        cookie = response.headers['Set-Cookie'].split(';', 1)[0]
+        response.close()
+        return cookie
+
+    def dashboard_api(self, path, cookie, payload=None, method='GET'):
+        body = None if payload is None else json.dumps(payload).encode()
+        headers = {'Cookie': cookie}
+        if body is not None:
+            headers['Content-Type'] = 'application/json'
+        request = urllib.request.Request(self.base + path, data=body, method=method,
+                                         headers=headers)
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as exc:
+            result = json.load(exc)
+            return exc.code, result
 
     def test_requires_independent_bearer_token(self):
         status, result = self.request({'body': {'value': [row()]}}, 'incorrecto')
@@ -358,14 +396,59 @@ class SyncApiTest(unittest.TestCase):
 
     def test_status_exposes_last_sync_to_dashboard(self):
         self.request({'body': {'value': [row()]}})
-        auth = base64.b64encode(b'dashboard:clave-de-prueba').decode()
         request = urllib.request.Request(self.base + '/api/status',
-                                         headers={'Authorization': 'Basic ' + auth})
+                                         headers={'Cookie': self.login_cookie()})
         with urllib.request.urlopen(request) as response:
             result = json.load(response)
         self.assertEqual('Power Automate', result['last_sync']['source'])
         self.assertEqual(0, result['last_sync']['errors'])
 
+    def test_dashboard_requires_login_session(self):
+        request = urllib.request.Request(self.base + '/api/status')
+        with self.assertRaises(urllib.error.HTTPError) as raised:
+            urllib.request.urlopen(request)
+        self.assertEqual(401, raised.exception.code)
+
+    def test_login_creates_session_and_logout_revokes_it(self):
+        cookie = self.login_cookie()
+        request = urllib.request.Request(self.base + '/api/status', headers={'Cookie': cookie})
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(200, response.status)
+        logout = urllib.request.Request(self.base + '/logout', data=b'', method='POST',
+                                        headers={'Cookie': cookie})
+        opener = urllib.request.build_opener(NoRedirect())
+        with self.assertRaises(urllib.error.HTTPError) as redirected:
+            opener.open(logout)
+        self.assertEqual(303, redirected.exception.code)
+        redirected.exception.close()
+        with self.assertRaises(urllib.error.HTTPError) as unauthorized:
+            urllib.request.urlopen(request)
+        self.assertEqual(401, unauthorized.exception.code)
+
+    def test_admin_creates_user_with_hashed_password(self):
+        admin = self.login_cookie()
+        status, result = self.dashboard_api('/api/users', admin, {
+            'action': 'create', 'username': 'supervisor.prueba',
+            'password': 'clave-temporal-segura', 'role': 'supervisor'}, 'POST')
+        self.assertEqual(200, status)
+        self.assertIn('supervisor.prueba', [user['username'] for user in result['users']])
+        with app.database() as conn:
+            stored = conn.execute('''SELECT password_hash,role FROM users
+              WHERE username='supervisor.prueba' ''').fetchone()
+        self.assertEqual('supervisor', stored['role'])
+        self.assertNotIn('clave-temporal-segura', stored['password_hash'])
+        self.assertTrue(stored['password_hash'].startswith('pbkdf2_sha256$'))
+        self.assertTrue(self.login_cookie('supervisor.prueba', 'clave-temporal-segura'))
+
+    def test_non_admin_cannot_manage_users(self):
+        admin = self.login_cookie()
+        self.dashboard_api('/api/users', admin, {
+            'action': 'create', 'username': 'solo.lectura',
+            'password': 'clave-temporal-segura', 'role': 'viewer'}, 'POST')
+        viewer = self.login_cookie('solo.lectura', 'clave-temporal-segura')
+        status, result = self.dashboard_api('/api/users', viewer)
+        self.assertEqual(403, status)
+        self.assertIn('permisos', result['error'])
     def test_rejects_request_over_configured_size_limit(self):
         original = app.MAX_SYNC_BODY
         app.MAX_SYNC_BODY = 10

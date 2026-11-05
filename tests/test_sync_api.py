@@ -427,6 +427,10 @@ class SyncApiTest(unittest.TestCase):
 
     def test_admin_creates_user_with_hashed_password(self):
         admin = self.login_cookie()
+        module = urllib.request.Request(self.base + '/users', headers={'Cookie': admin})
+        with urllib.request.urlopen(module) as response:
+            self.assertEqual(200, response.status)
+            self.assertIn('Usuarios y permisos', response.read().decode())
         status, result = self.dashboard_api('/api/users', admin, {
             'action': 'create', 'username': 'supervisor.prueba',
             'password': 'clave-temporal-segura', 'role': 'supervisor'}, 'POST')
@@ -449,6 +453,10 @@ class SyncApiTest(unittest.TestCase):
         status, result = self.dashboard_api('/api/users', viewer)
         self.assertEqual(403, status)
         self.assertIn('permisos', result['error'])
+        module = urllib.request.Request(self.base + '/users', headers={'Cookie': viewer})
+        with self.assertRaises(urllib.error.HTTPError) as forbidden:
+            urllib.request.urlopen(module)
+        self.assertEqual(403, forbidden.exception.code)
     def test_rejects_request_over_configured_size_limit(self):
         original = app.MAX_SYNC_BODY
         app.MAX_SYNC_BODY = 10

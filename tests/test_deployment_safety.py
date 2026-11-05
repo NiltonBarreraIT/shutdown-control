@@ -19,6 +19,8 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('PORT: 8080', compose)
         self.assertIn('EXPOSE 8080', dockerfile)
         self.assertIn('login.html', dockerfile)
+        self.assertIn('users.html', dockerfile)
+        self.assertIn('users.js', dockerfile)
 
 
 class MigrationSafetyTest(unittest.TestCase):

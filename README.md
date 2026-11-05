@@ -151,7 +151,7 @@ El token de Power Automate continúa siendo independiente y no utiliza las sesio
 
 ### Usuarios y permisos
 
-La cuenta administradora dispone de la sección **Usuarios**, desde donde puede crear cuentas, cambiar roles, activar o bloquear accesos y restablecer contraseñas. Una cuenta bloqueada pierde inmediatamente todas sus sesiones. El sistema impide desactivar o degradar la propia cuenta administradora y también impide dejar la plataforma sin administradores activos.
+La cuenta administradora dispone del módulo independiente **Usuarios** (`/users`), desde donde puede crear cuentas, cambiar roles, activar o bloquear accesos y restablecer contraseñas. Este módulo no forma parte del dashboard operacional y el servidor impide acceder a su página, JavaScript y API sin rol de administrador. Una cuenta bloqueada pierde inmediatamente todas sus sesiones. El sistema impide desactivar o degradar la propia cuenta administradora y también impide dejar la plataforma sin administradores activos.
 
 | Rol | Acceso |
 | --- | --- |

@@ -731,6 +731,14 @@ class Handler(BaseHTTPRequestHandler):
             if not self.role_allowed('admin'):
                 return
             return self.send(200, json.dumps(self.users_payload(), ensure_ascii=False))
+        if path == '/users':
+            if not self.role_allowed('admin'):
+                return
+            return self.send(200, (ROOT / 'users.html').read_bytes(), 'text/html')
+        if path == '/users.js':
+            if not self.role_allowed('admin'):
+                return
+            return self.send(200, (ROOT / 'users.js').read_bytes(), 'application/javascript')
         if path == '/':
             return self.send(200, (ROOT / 'index.html').read_bytes(), 'text/html')
         if path == '/app.js':

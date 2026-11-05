@@ -1,0 +1,18 @@
+services:
+  shutdown-control:
+    build: .
+    restart: unless-stopped
+    environment:
+      DASHBOARD_USER: ${DASHBOARD_USER:?Defina usuario en .env}
+      DASHBOARD_PASSWORD: ${DASHBOARD_PASSWORD:?Defina contraseña en .env}
+      DATABASE_PATH: /data/shutdown.db
+      HOST: 0.0.0.0
+      PORT: 8080
+    ports:
+      - "127.0.0.1:8086:8080"
+    volumes:
+      - shutdown_data:/data
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  shutdown_data:

@@ -42,10 +42,16 @@ def db_conn():
       flags TEXT, imported_at TEXT)''')
     conn.execute('''CREATE TABLE IF NOT EXISTS sync_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, records INTEGER, source TEXT,
-      errors INTEGER DEFAULT 0, detail TEXT, pending INTEGER DEFAULT 0)''')
+      errors INTEGER DEFAULT 0, detail TEXT, pending INTEGER DEFAULT 0,
+      discrepancies INTEGER DEFAULT 0)''')
     conn.execute('''CREATE TABLE IF NOT EXISTS pending_reports (
       id TEXT PRIMARY KEY, area TEXT, reason TEXT,
       first_seen_at TEXT, updated_at TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS ot_discrepancies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, form_id TEXT, original_ot TEXT,
+      received_ot TEXT, source TEXT, first_seen_at TEXT, last_seen_at TEXT,
+      occurrences INTEGER DEFAULT 1,
+      UNIQUE(form_id, original_ot, received_ot))''')
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(sync_log)')}
     if 'errors' not in columns:
         conn.execute('ALTER TABLE sync_log ADD COLUMN errors INTEGER DEFAULT 0')
@@ -53,6 +59,8 @@ def db_conn():
         conn.execute('ALTER TABLE sync_log ADD COLUMN detail TEXT')
     if 'pending' not in columns:
         conn.execute('ALTER TABLE sync_log ADD COLUMN pending INTEGER DEFAULT 0')
+    if 'discrepancies' not in columns:
+        conn.execute('ALTER TABLE sync_log ADD COLUMN discrepancies INTEGER DEFAULT 0')
     return conn
 
 
@@ -217,10 +225,42 @@ UPSERT_REPORT = '''INSERT INTO reports VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
   ON CONFLICT(id) DO UPDATE SET
   start_at=excluded.start_at, submitted_at=excluded.submitted_at,
   reporter=excluded.reporter, email=excluded.email, area=excluded.area,
-  shift=excluded.shift, report_date=excluded.report_date, ot=excluded.ot,
+  shift=excluded.shift, report_date=excluded.report_date, ot=reports.ot,
   activity=excluded.activity, progress=excluded.progress,
   workers=excluded.workers, hours=excluded.hours, comment=excluded.comment,
   photos=excluded.photos, flags=excluded.flags, imported_at=excluded.imported_at'''
+
+
+def preserve_registered_ots(conn, reports, source, observed_at):
+    adjusted, discrepancies = [], []
+    for report in reports:
+        existing = conn.execute('SELECT ot FROM reports WHERE id=?', (report[0],)).fetchone()
+        if existing and value(existing['ot']) and value(existing['ot']) != report[8]:
+            received_ot = report[8]
+            report = list(report)
+            report[8] = value(existing['ot'])
+            try:
+                flags = json.loads(report[15] or '[]')
+            except (TypeError, json.JSONDecodeError):
+                flags = []
+            alert = 'OT discrepante en origen: revisar'
+            if alert not in flags:
+                flags.append(alert)
+            report[15] = json.dumps(flags)
+            report = tuple(report)
+            discrepancy = {'id': report[0], 'original_ot': report[8],
+                           'received_ot': received_ot}
+            discrepancies.append(discrepancy)
+            conn.execute('''INSERT INTO ot_discrepancies
+              (form_id,original_ot,received_ot,source,first_seen_at,last_seen_at,occurrences)
+              VALUES (?,?,?,?,?,?,1)
+              ON CONFLICT(form_id,original_ot,received_ot) DO UPDATE SET
+              source=excluded.source, last_seen_at=excluded.last_seen_at,
+              occurrences=ot_discrepancies.occurrences+1''',
+                         (report[0], report[8], received_ot, source,
+                          observed_at, observed_at))
+        adjusted.append(report)
+    return adjusted, discrepancies
 
 
 def log_sync(records, source, errors=0, detail=None):
@@ -260,9 +300,12 @@ def sync_forms(data):
     pending_count = 0 if errors else len(pending)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     pending_audit = []
+    discrepancy_audit = []
     with database() as conn:
         if not errors:
             if reports:
+                reports, discrepancy_audit = preserve_registered_ots(
+                    conn, reports, 'Power Automate', now)
                 conn.executemany(UPSERT_REPORT, reports)
                 conn.executemany('DELETE FROM pending_reports WHERE id=?',
                                  ((report[0],) for report in reports))
@@ -290,13 +333,15 @@ def sync_forms(data):
                   ON CONFLICT(id) DO UPDATE SET area=excluded.area,
                   reason=excluded.reason, updated_at=excluded.updated_at''',
                                  pending_rows)
-        detail = (errors[:20] if errors else pending_audit[:20] if pending_audit else None)
+        review_detail = pending_audit + discrepancy_audit
+        detail = errors[:20] if errors else review_detail[:20] if review_detail else None
         conn.execute('''INSERT INTO sync_log
-          (at,records,source,errors,detail,pending) VALUES (?,?,?,?,?,?)''',
+          (at,records,source,errors,detail,pending,discrepancies)
+          VALUES (?,?,?,?,?,?,?)''',
                      (now, committed, 'Power Automate', len(errors),
                       json.dumps(detail, ensure_ascii=False) if detail else None,
-                      pending_count))
-    return committed, pending_count, errors
+                      pending_count, len(discrepancy_audit)))
+    return committed, pending_count, len(discrepancy_audit), errors
 
 
 def import_xlsx(blob, source='Carga manual'):
@@ -306,19 +351,24 @@ def import_xlsx(blob, source='Carga manual'):
     reports = [normalized for row in rows if (normalized := normalize(row))]
     if not reports:
         raise ValueError('No se encontraron reportes válidos con la estructura de Spence.')
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
     with database() as conn:
+        reports, discrepancies = preserve_registered_ots(conn, reports, source, now)
         conn.executemany(UPSERT_REPORT, reports)
         conn.executemany('DELETE FROM pending_reports WHERE id=?',
                          ((report[0],) for report in reports))
-        conn.execute('INSERT INTO sync_log(at,records,source) VALUES (?,?,?)',
-                     (dt.datetime.now(dt.timezone.utc).isoformat(), len(reports), source))
+        conn.execute('''INSERT INTO sync_log
+          (at,records,source,detail,discrepancies) VALUES (?,?,?,?,?)''',
+                     (now, len(reports), source,
+                      json.dumps(discrepancies[:20], ensure_ascii=False) if discrepancies else None,
+                      len(discrepancies)))
     return len(reports)
 
 
 def payload():
     with database() as conn:
         records = [dict(r) for r in conn.execute('SELECT * FROM reports ORDER BY submitted_at DESC, id DESC')]
-        last = conn.execute('''SELECT at,records,source,errors,pending
+        last = conn.execute('''SELECT at,records,source,errors,pending,discrepancies
           FROM sync_log ORDER BY id DESC LIMIT 1''').fetchone()
         pending_count = conn.execute('SELECT count(*) FROM pending_reports').fetchone()[0]
     ot_latest = {}
@@ -424,15 +474,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(413, json.dumps({'error': 'Solicitud vacía o demasiado grande'}))
             raw = self.rfile.read(length)
             data = json.loads(raw.decode('utf-8'))
-            imported, pending, errors = sync_forms(data)
+            imported, pending, discrepancies, errors = sync_forms(data)
             status = 422 if errors else 200
             result = ('rejected' if errors else
+                      'success_with_review' if discrepancies else
                       'success_with_pending' if pending else 'success')
             self.send(status, json.dumps({'status': result, 'atomic': True,
                                           'processed': len(data['body']['value']),
                                           'imported': imported,
                                           'upserted': imported,
                                           'pending': pending,
+                                          'discrepancies': discrepancies,
                                           'rejected': len(data['body']['value']) if errors else 0,
                                           'errors': errors[:20]},
                                          ensure_ascii=False))

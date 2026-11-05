@@ -34,9 +34,12 @@ No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acci
 
 - `success`: HTTP `200`; todas las respuestas fueron importadas.
 - `success_with_pending`: HTTP `200`; las respuestas con OT fueron importadas y las que aún no tienen OT quedaron trazadas por Id en `pending_reports`. La respuesta informa `imported` y `pending`. No se inventan números de OT.
+- `success_with_review`: HTTP `200`; los demás campos fueron actualizados, pero una OT recibida no coincide con la OT original e inmutable. La respuesta informa `discrepancies` y el reporte queda marcado para revisión.
 - `rejected`: HTTP `422`; existe al menos un error estructural real, como Id/área inválidos, tipo no permitido o Id duplicado dentro del lote. La transacción completa se rechaza con `upserted: 0`.
 
-Una respuesta pendiente se elimina de `pending_reports` y se guarda mediante UPSERT en `reports` cuando el mismo Id llega posteriormente con OT. Si un Id que ya tenía un reporte válido pierde su OT en el origen, el reporte histórico no se elimina: conserva su última OT, recibe la alerta `OT eliminada en origen: revisar` y queda registrado como pendiente con un motivo diferenciado. El evento permanece auditado en `sync_log`. Cuando vuelve a tener OT, el UPSERT actualiza el registro, limpia la alerta derivada y retira el pendiente. El dashboard muestra fecha UTC, fuente, cantidad importada, pendientes y errores de la última sincronización.
+La primera OT válida asociada a un Id de Forms es inmutable. El sistema nunca genera, incrementa, renumera ni sustituye ese identificador. Si el mismo Id llega con otra OT, conserva la original, actualiza los demás campos, añade la alerta `OT discrepante en origen: revisar` y registra ambas OT en `ot_discrepancies`. Una respuesta pendiente se elimina de `pending_reports` y registra su primera OT mediante UPSERT cuando el mismo Id llega posteriormente con una OT válida.
+
+Si un Id que ya tenía un reporte válido pierde su OT en el origen, el reporte histórico tampoco se elimina: conserva su última OT, recibe la alerta `OT eliminada en origen: revisar` y queda registrado como pendiente con un motivo diferenciado. El evento permanece auditado en `sync_log`. Cuando vuelve a tener la misma OT, el UPSERT actualiza el registro, limpia la alerta derivada y retira el pendiente. El dashboard muestra fecha UTC, fuente, cantidad importada, pendientes, discrepancias y errores de la última sincronización.
 
 ### Prueba local con datos ficticios
 

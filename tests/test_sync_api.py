@@ -204,7 +204,7 @@ class SyncApiTest(unittest.TestCase):
         self.assertIn('conserva reporte anterior', pending['reason'])
         self.assertIn('HISTORY-1', audit['detail'])
 
-        recovered = set_ot(row('HISTORY-1', progress='80'), '450100')
+        recovered = set_ot(row('HISTORY-1', progress='80'), '450099')
         status, result = self.request({'body': {'value': [recovered]}})
         self.assertEqual((200, 'success', 1, 0),
                          (status, result['status'], result['imported'], result['pending']))
@@ -214,8 +214,83 @@ class SyncApiTest(unittest.TestCase):
             pending_count = conn.execute(
                 "SELECT count(*) FROM pending_reports WHERE id='HISTORY-1'").fetchone()[0]
         self.assertEqual(1, len(reports))
-        self.assertEqual(('450100', 80.0, []),
+        self.assertEqual(('450099', 80.0, []),
                          (reports[0]['ot'], reports[0]['progress'], json.loads(reports[0]['flags'])))
+        self.assertEqual(0, pending_count)
+
+    def test_same_ot_450099_synced_twice_remains_450099(self):
+        for progress in ('20', '20'):
+            status, result = self.request({'body': {'value': [
+                set_ot(row('IMMUTABLE-1', progress=progress), '450099')]}})
+            self.assertEqual((200, 0), (status, result['discrepancies']))
+        with app.database() as conn:
+            reports = conn.execute(
+                "SELECT ot FROM reports WHERE id='IMMUTABLE-1'").fetchall()
+        self.assertEqual(1, len(reports))
+        self.assertEqual('450099', reports[0]['ot'])
+
+    def test_ot_450100_is_audited_but_does_not_replace_450099(self):
+        self.request({'body': {'value': [set_ot(row('IMMUTABLE-2'), '450099')]}})
+        status, result = self.request({'body': {'value': [
+            set_ot(row('IMMUTABLE-2', progress='50'), '450100')]}})
+        self.assertEqual((200, 'success_with_review', 1),
+                         (status, result['status'], result['discrepancies']))
+        with app.database() as conn:
+            report = conn.execute(
+                "SELECT ot,progress,flags FROM reports WHERE id='IMMUTABLE-2'").fetchone()
+            discrepancy = conn.execute('''SELECT original_ot,received_ot,occurrences
+              FROM ot_discrepancies WHERE form_id='IMMUTABLE-2' ''').fetchone()
+        self.assertEqual(('450099', 50.0), (report['ot'], report['progress']))
+        self.assertIn('OT discrepante en origen: revisar', json.loads(report['flags']))
+        self.assertEqual(('450099', '450100', 1), tuple(discrepancy))
+
+    def test_progress_changes_from_20_to_50_without_changing_ot(self):
+        self.request({'body': {'value': [
+            set_ot(row('IMMUTABLE-3', progress='20'), '450099')]}})
+        self.request({'body': {'value': [
+            set_ot(row('IMMUTABLE-3', progress='50'), '450099')]}})
+        with app.database() as conn:
+            report = conn.execute(
+                "SELECT ot,progress FROM reports WHERE id='IMMUTABLE-3'").fetchone()
+        self.assertEqual(('450099', 50.0), tuple(report))
+
+    def test_operational_fields_update_while_ot_stays_immutable(self):
+        self.request({'body': {'value': [
+            set_ot(row('IMMUTABLE-4', progress='20'), '450099')]}})
+        updated = set_ot(row('IMMUTABLE-4', progress='50'), '450099')
+        for key in tuple(updated):
+            if '(Filtros)' not in key:
+                continue
+            if 'trabajadores' in key:
+                updated[key] = '7'
+            elif 'horas' in key:
+                updated[key] = '9'
+            elif 'reseña' in key:
+                updated[key] = 'Reseña ficticia actualizada'
+            elif 'fotografía' in key:
+                updated[key] = f'https://example.invalid/actualizada/{key.split()[4].lower()}'
+        self.request({'body': {'value': [updated]}})
+        with app.database() as conn:
+            report = conn.execute('''SELECT ot,progress,workers,hours,comment,photos
+              FROM reports WHERE id='IMMUTABLE-4' ''').fetchone()
+        self.assertEqual(('450099', 50.0, 7.0, 9.0, 'Reseña ficticia actualizada'),
+                         tuple(report)[:5])
+        self.assertTrue(all('/actualizada/' in photo for photo in json.loads(report['photos'])))
+
+    def test_pending_response_records_its_first_valid_ot(self):
+        status, result = self.request({'body': {'value': [
+            without_ot(row('FIRST-OT'))]}})
+        self.assertEqual((200, 1), (status, result['pending']))
+        status, result = self.request({'body': {'value': [
+            set_ot(row('FIRST-OT'), '450099')]}})
+        self.assertEqual((200, 'success', 0),
+                         (status, result['status'], result['discrepancies']))
+        with app.database() as conn:
+            report = conn.execute(
+                "SELECT ot FROM reports WHERE id='FIRST-OT'").fetchone()
+            pending_count = conn.execute(
+                "SELECT count(*) FROM pending_reports WHERE id='FIRST-OT'").fetchone()[0]
+        self.assertEqual('450099', report['ot'])
         self.assertEqual(0, pending_count)
 
     def test_missing_sync_token_fails_closed_without_breaking_dashboard(self):

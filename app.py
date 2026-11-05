@@ -5,6 +5,7 @@ import hmac
 import io
 import json
 import os
+import re
 import secrets
 import sqlite3
 import unicodedata
@@ -31,6 +32,7 @@ BOOTSTRAPPED_DATABASES = set()
 ROLES = ('admin', 'planner', 'supervisor', 'viewer')
 ROLE_LABELS = {'admin': 'Administrador', 'planner': 'Planificador',
                'supervisor': 'Supervisor', 'viewer': 'Visualizador'}
+EMAIL_PATTERN = re.compile(r'^[^\s@]+@[^\s@]+\.[^\s@]+$')
 MAX_UPLOAD = 15 * 1024 * 1024
 MAX_SYNC_BODY = int(os.getenv('SYNC_MAX_BYTES', str(2 * 1024 * 1024)))
 MAX_SYNC_RECORDS = int(os.getenv('SYNC_MAX_RECORDS', '5000'))
@@ -576,24 +578,25 @@ class Handler(BaseHTTPRequestHandler):
             action = value(data.get('action'))
             with database() as conn:
                 if action == 'create':
-                    username = value(data.get('username'))
+                    username = value(data.get('username')).casefold()
                     password = data.get('password', '')
                     role = value(data.get('role'))
-                    if not 3 <= len(username) <= 100:
-                        raise ValueError('El usuario debe tener entre 3 y 100 caracteres')
-                    if not username.replace('.', '').replace('-', '').replace('_', '').isalnum():
-                        raise ValueError('El usuario sólo admite letras, números, punto, guion y guion bajo')
+                    if len(username) > 254 or not EMAIL_PATTERN.fullmatch(username):
+                        raise ValueError('Ingrese un correo electrónico válido')
                     if not isinstance(password, str) or len(password) < 12:
                         raise ValueError('La contraseña debe tener al menos 12 caracteres')
                     if role not in ROLES:
                         raise ValueError('Rol inválido')
+                    if conn.execute('SELECT 1 FROM users WHERE lower(username)=lower(?)',
+                                    (username,)).fetchone():
+                        raise ValueError('El correo electrónico ya está registrado')
                     try:
                         conn.execute('''INSERT INTO users
                           (username,password_hash,role,active,created_at)
                           VALUES (?,?,?,1,?)''',
                                      (username, hash_password(password), role, utc_now()))
                     except sqlite3.IntegrityError:
-                        raise ValueError('El nombre de usuario ya existe')
+                        raise ValueError('El correo electrónico ya está registrado')
                 elif action == 'update':
                     user_id = int(data.get('user_id'))
                     role = value(data.get('role'))
@@ -655,7 +658,7 @@ class Handler(BaseHTTPRequestHandler):
             form = parse_qs(self.rfile.read(length).decode('utf-8'), keep_blank_values=True)
         except UnicodeDecodeError:
             return self.login_page('Solicitud de acceso inválida.', 400)
-        username = value(form.get('username', [''])[0])[:200]
+        username = value(form.get('username', [''])[0]).casefold()[:254]
         password = form.get('password', [''])[0]
         client_ip = self.client_address[0]
         now = dt.datetime.now(dt.timezone.utc)
@@ -668,7 +671,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.login_page(
                     f'Demasiados intentos. Espere {LOGIN_LOCK_MINUTES} minutos.', 429)
             user = conn.execute('''SELECT id,username,password_hash FROM users
-              WHERE username=? AND active=1''', (username,)).fetchone()
+              WHERE lower(username)=lower(?) AND active=1''', (username,)).fetchone()
             if not user or not verify_password(password, user['password_hash']):
                 conn.execute('''INSERT INTO login_attempts(username,client_ip,failed_at)
                   VALUES (?,?,?)''', (username, client_ip, now.isoformat()))

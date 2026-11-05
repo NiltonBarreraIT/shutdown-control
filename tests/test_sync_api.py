@@ -432,24 +432,26 @@ class SyncApiTest(unittest.TestCase):
             self.assertEqual(200, response.status)
             self.assertIn('Usuarios y permisos', response.read().decode())
         status, result = self.dashboard_api('/api/users', admin, {
-            'action': 'create', 'username': 'supervisor.prueba',
+            'action': 'create', 'username': 'Supervisor.Prueba@Example.invalid',
             'password': 'clave-temporal-segura', 'role': 'supervisor'}, 'POST')
         self.assertEqual(200, status)
-        self.assertIn('supervisor.prueba', [user['username'] for user in result['users']])
+        self.assertIn('supervisor.prueba@example.invalid',
+                      [user['username'] for user in result['users']])
         with app.database() as conn:
             stored = conn.execute('''SELECT password_hash,role FROM users
-              WHERE username='supervisor.prueba' ''').fetchone()
+              WHERE username='supervisor.prueba@example.invalid' ''').fetchone()
         self.assertEqual('supervisor', stored['role'])
         self.assertNotIn('clave-temporal-segura', stored['password_hash'])
         self.assertTrue(stored['password_hash'].startswith('pbkdf2_sha256$'))
-        self.assertTrue(self.login_cookie('supervisor.prueba', 'clave-temporal-segura'))
+        self.assertTrue(self.login_cookie('SUPERVISOR.PRUEBA@EXAMPLE.INVALID',
+                                          'clave-temporal-segura'))
 
     def test_non_admin_cannot_manage_users(self):
         admin = self.login_cookie()
         self.dashboard_api('/api/users', admin, {
-            'action': 'create', 'username': 'solo.lectura',
+            'action': 'create', 'username': 'solo.lectura@example.invalid',
             'password': 'clave-temporal-segura', 'role': 'viewer'}, 'POST')
-        viewer = self.login_cookie('solo.lectura', 'clave-temporal-segura')
+        viewer = self.login_cookie('solo.lectura@example.invalid', 'clave-temporal-segura')
         status, result = self.dashboard_api('/api/users', viewer)
         self.assertEqual(403, status)
         self.assertIn('permisos', result['error'])
@@ -457,6 +459,21 @@ class SyncApiTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as forbidden:
             urllib.request.urlopen(module)
         self.assertEqual(403, forbidden.exception.code)
+
+    def test_new_accounts_require_unique_email(self):
+        admin = self.login_cookie()
+        status, result = self.dashboard_api('/api/users', admin, {
+            'action': 'create', 'username': 'nombre-sin-correo',
+            'password': 'clave-temporal-segura', 'role': 'viewer'}, 'POST')
+        self.assertEqual(400, status)
+        self.assertIn('correo electrónico válido', result['error'])
+        payload = {'action': 'create', 'username': 'persona@example.invalid',
+                   'password': 'clave-temporal-segura', 'role': 'viewer'}
+        self.assertEqual(200, self.dashboard_api('/api/users', admin, payload, 'POST')[0])
+        payload['username'] = 'PERSONA@EXAMPLE.INVALID'
+        status, result = self.dashboard_api('/api/users', admin, payload, 'POST')
+        self.assertEqual(400, status)
+        self.assertIn('ya está registrado', result['error'])
     def test_rejects_request_over_configured_size_limit(self):
         original = app.MAX_SYNC_BODY
         app.MAX_SYNC_BODY = 10

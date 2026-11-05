@@ -37,6 +37,13 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertNotIn('Órdenes de trabajo</a>', dashboard)
         self.assertNotIn('Bitácora técnica</a>', dashboard)
 
+    def test_mobile_layout_keeps_navigation_visible(self):
+        stylesheet = (ROOT / 'style.css').read_text(encoding='utf-8')
+        self.assertIn('@media(max-width:700px)', stylesheet)
+        self.assertIn('.sidebar nav{display:flex', stylesheet)
+        self.assertIn('.table-scroll table{min-width:760px}', stylesheet)
+        self.assertIn('@media(max-width:420px)', stylesheet)
+
 
 class MigrationSafetyTest(unittest.TestCase):
     def setUp(self):

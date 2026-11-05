@@ -13,6 +13,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 
 git fetch --prune origin "$BRANCH"
+BUILD_ARGS=(--remove-orphans)
 
 if [[ -n "$TARGET_SHA" ]]; then
   git merge-base --is-ancestor "$TARGET_SHA" "origin/$BRANCH" || {
@@ -20,23 +21,25 @@ if [[ -n "$TARGET_SHA" ]]; then
     exit 1
   }
   if [[ "$(git rev-parse HEAD)" == "$TARGET_SHA" ]]; then
-    echo "Sin cambios: ya esta desplegado el commit $TARGET_SHA."
-    exit 0
+    echo "Codigo sin cambios: verificando que el servicio este iniciado."
+  else
+    git checkout --detach "$TARGET_SHA"
+    BUILD_ARGS=(--build --remove-orphans)
   fi
-  git checkout --detach "$TARGET_SHA"
 else
   CURRENT_SHA="$(git rev-parse HEAD)"
   REMOTE_SHA="$(git rev-parse "origin/$BRANCH")"
   if [[ "$CURRENT_SHA" == "$REMOTE_SHA" ]]; then
-    echo "Sin cambios: ya esta desplegado el commit $CURRENT_SHA."
-    exit 0
+    echo "Codigo sin cambios: verificando que el servicio este iniciado."
+  else
+    git checkout "$BRANCH"
+    git merge --ff-only "origin/$BRANCH"
+    BUILD_ARGS=(--build --remove-orphans)
   fi
-  git checkout "$BRANCH"
-  git merge --ff-only "origin/$BRANCH"
 fi
 
 docker compose config --quiet
-docker compose up -d --build --remove-orphans
+docker compose up -d "${BUILD_ARGS[@]}"
 
 DEPLOYED_SHA="$(git rev-parse HEAD)"
 printf '%s commit=%s branch=%s\n' "$(date --iso-8601=seconds)" "$DEPLOYED_SHA" "$BRANCH" | tee -a deploy-history.log

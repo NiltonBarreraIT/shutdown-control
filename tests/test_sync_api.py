@@ -44,6 +44,13 @@ def row(record_id='101', area='Filtros', progress='25'):
     return record
 
 
+def without_ot(record):
+    for key in tuple(record):
+        if ' OT ' in key:
+            record[key] = ''
+    return record
+
+
 class SyncApiTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -135,6 +142,41 @@ class SyncApiTest(unittest.TestCase):
             self.assertEqual(0, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
             log = conn.execute('SELECT records,errors FROM sync_log').fetchone()
             self.assertEqual((0, 1), tuple(log))
+
+    def test_rejects_duplicate_forms_id_inside_one_batch(self):
+        status, result = self.request({'body': {'value': [row('DUP-1'), row('DUP-1')]}})
+        self.assertEqual((422, 'rejected', 0, 0),
+                         (status, result['status'], result['imported'], result['pending']))
+        self.assertIn('Id duplicado', result['errors'][0]['error'])
+        with app.database() as conn:
+            self.assertEqual(0, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
+            self.assertEqual(0, conn.execute('SELECT count(*) FROM pending_reports').fetchone()[0])
+
+    def test_imports_58_and_tracks_2_pending_without_ot(self):
+        rows = [row(str(1000 + index), AREAS[index % len(AREAS)]) for index in range(60)]
+        without_ot(rows[58])
+        without_ot(rows[59])
+
+        status, result = self.request({'body': {'value': rows}})
+        self.assertEqual(200, status)
+        self.assertEqual(('success_with_pending', 60, 58, 2, 0, []),
+                         (result['status'], result['processed'], result['imported'],
+                          result['pending'], result['rejected'], result['errors']))
+        with app.database() as conn:
+            self.assertEqual(58, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
+            pending = [tuple(item) for item in conn.execute(
+                'SELECT id,reason FROM pending_reports ORDER BY id')]
+            self.assertEqual([('1058', 'OT pendiente'), ('1059', 'OT pendiente')], pending)
+
+        # The same Forms Id becomes a normal report when an OT is supplied later.
+        status, result = self.request({'body': {'value': [row('1058', AREAS[58 % 4])]}})
+        self.assertEqual((200, 'success', 1, 0),
+                         (status, result['status'], result['imported'], result['pending']))
+        with app.database() as conn:
+            self.assertEqual(59, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
+            self.assertEqual(1, conn.execute('SELECT count(*) FROM pending_reports').fetchone()[0])
+            self.assertEqual(1, conn.execute(
+                "SELECT count(*) FROM reports WHERE id='1058'").fetchone()[0])
 
     def test_missing_sync_token_fails_closed_without_breaking_dashboard(self):
         token = app.SYNC_TOKEN

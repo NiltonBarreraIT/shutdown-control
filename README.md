@@ -21,7 +21,7 @@ Primera versión operativa para seguimiento de órdenes de trabajo a partir del 
 {"body":{"value":[{"Id":"101","¿Cuál es tu área de trabajo?":"Filtros","Ingresa el número de OT (Filtros)":"450001"}]}}
 ```
 
-Los nombres de las columnas se normalizan ignorando mayúsculas, tildes, signos, espacios normales y espacios especiales. El área se reconoce desde `¿Cuál es tu área de trabajo?`. Los campos operacionales se localizan por su significado y por el área entre paréntesis; no se usa el orden de las columnas. Esto contempla Filtros, Molibdeno, Tranque y Flotación, incluyendo encabezados como `Carga una fotografía del ANTES del trabajo (Filtros)`, `... DURANTE ...` y `... FINAL ...` para cada área. Cada fila debe incluir `Id`, área y OT. La API acepta hasta 2 MiB y 5.000 filas por solicitud por defecto. Estos límites pueden reducirse mediante `SYNC_MAX_BYTES` y `SYNC_MAX_RECORDS`.
+Los nombres de las columnas se normalizan ignorando mayúsculas, tildes, signos, espacios normales y espacios especiales. El área se reconoce desde `¿Cuál es tu área de trabajo?`. Los campos operacionales se localizan por su significado y por el área entre paréntesis; no se usa el orden de las columnas. Esto contempla Filtros, Molibdeno, Tranque y Flotación, incluyendo encabezados como `Carga una fotografía del ANTES del trabajo (Filtros)`, `... DURANTE ...` y `... FINAL ...` para cada área. Cada fila debe incluir un `Id` y área válidos. La API acepta hasta 2 MiB y 5.000 filas por solicitud por defecto. Estos límites pueden reducirse mediante `SYNC_MAX_BYTES` y `SYNC_MAX_RECORDS`.
 
 La autenticación de esta ruta es independiente de la contraseña del dashboard. Genere un secreto aleatorio (por ejemplo, con `openssl rand -hex 32`), configúrelo sólo en el `.env` de cada entorno y envíelo desde Power Automate como encabezado:
 
@@ -30,7 +30,13 @@ Authorization: Bearer <FORMS_SYNC_TOKEN>
 Content-Type: application/json
 ```
 
-No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acciones o logs. La sincronización es atómica: si todas las filas son válidas responde HTTP `200` con `status: "success"`; si una o más filas fallan responde HTTP `422` con `status: "rejected"`, `atomic: true`, `upserted: 0` y errores por posición. En este último caso no se guarda ninguna fila del lote, por lo que Power Automate puede corregirlo y reintentarlo sin una pérdida parcial silenciosa. El dashboard muestra fecha UTC, fuente, cantidad confirmada y errores de la última sincronización.
+No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acciones o logs. La política de resultados distingue tres estados:
+
+- `success`: HTTP `200`; todas las respuestas fueron importadas.
+- `success_with_pending`: HTTP `200`; las respuestas con OT fueron importadas y las que aún no tienen OT quedaron trazadas por Id en `pending_reports`. La respuesta informa `imported` y `pending`. No se inventan números de OT.
+- `rejected`: HTTP `422`; existe al menos un error estructural real, como Id/área inválidos, tipo no permitido o Id duplicado dentro del lote. La transacción completa se rechaza con `upserted: 0`.
+
+Una respuesta pendiente se elimina de `pending_reports` y se guarda mediante UPSERT en `reports` cuando el mismo Id llega posteriormente con OT. El dashboard muestra fecha UTC, fuente, cantidad importada, pendientes y errores de la última sincronización.
 
 ### Prueba local con datos ficticios
 
@@ -70,7 +76,7 @@ Ejecute las pruebas automatizadas con `python -m unittest discover -s tests -v`.
 1. Copie esta carpeta a la VPS.
 2. Duplique `.env.example` como `.env` y establezca credenciales y `FORMS_SYNC_TOKEN` únicos y robustos. El token no debe ser la contraseña del dashboard ni una credencial Microsoft 365.
 3. Ejecute `docker compose up -d --build`.
-4. Configure Nginx como proxy inverso hacia `http://127.0.0.1:8086` con certificado TLS (HTTPS) y restricción de acceso adecuada, idealmente VPN.
+4. Configure Nginx para publicar el servicio en el puerto externo `2000`, con certificado TLS (HTTPS) y restricción de acceso adecuada, idealmente VPN. El contenedor mantiene el puerto interno `8080`.
 5. Ingrese al dominio configurado y seleccione **Actualizar Excel** para cargar el archivo de reportabilidad.
 
 ### Preparación previa del secreto en la VPS
@@ -126,7 +132,7 @@ El usuario usado por GitHub Actions debe poder leer `/opt/shutdown-control`, eje
 
 No use `StrictHostKeyChecking=no` ni guarde `.env`, contraseñas o llaves en el repositorio. `deploy-history.log` en la VPS registra fecha y commit de cada despliegue; el historial de Actions conserva además actor, resultado y logs. Si la VPS contiene cambios manuales, el despliegue se detiene para proteger la trazabilidad.
 
-No exponga directamente el puerto 8086 a internet. El contenedor publica únicamente en localhost. La autenticación básica del MVP no proporciona permisos granulares ni SSO; para producción corporativa se recomienda Entra ID, VPN, controles de auditoría y políticas de retención.
+No exponga directamente el puerto interno del contenedor a internet; el acceso externo establecido es el puerto `2000` administrado por Nginx. La autenticación básica del MVP no proporciona permisos granulares ni SSO; para producción corporativa se recomienda Entra ID, VPN, controles de auditoría y políticas de retención.
 
 ## Integración OneDrive — etapa pendiente
 

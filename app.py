@@ -42,12 +42,17 @@ def db_conn():
       flags TEXT, imported_at TEXT)''')
     conn.execute('''CREATE TABLE IF NOT EXISTS sync_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, records INTEGER, source TEXT,
-      errors INTEGER DEFAULT 0, detail TEXT)''')
+      errors INTEGER DEFAULT 0, detail TEXT, pending INTEGER DEFAULT 0)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS pending_reports (
+      id TEXT PRIMARY KEY, area TEXT, reason TEXT,
+      first_seen_at TEXT, updated_at TEXT)''')
     columns = {row['name'] for row in conn.execute('PRAGMA table_info(sync_log)')}
     if 'errors' not in columns:
         conn.execute('ALTER TABLE sync_log ADD COLUMN errors INTEGER DEFAULT 0')
     if 'detail' not in columns:
         conn.execute('ALTER TABLE sync_log ADD COLUMN detail TEXT')
+    if 'pending' not in columns:
+        conn.execute('ALTER TABLE sync_log ADD COLUMN pending INTEGER DEFAULT 0')
     return conn
 
 
@@ -141,6 +146,13 @@ FIELD_RULES = {
 }
 
 
+class PendingReport(ValueError):
+    def __init__(self, record_id, area):
+        super().__init__('OT pendiente')
+        self.record_id = record_id
+        self.area = area
+
+
 def find_value(index, aliases=(), groups=(), area=''):
     for alias in aliases:
         if normalized_key(alias) in index:
@@ -179,7 +191,7 @@ def normalize_json_record(record):
               for name, groups in FIELD_RULES.items()}
     ot = value(fields['ot'])
     if not ot:
-        raise ValueError('falta la OT del área seleccionada')
+        raise PendingReport(record_id, area)
     progress, workers, hours = (number(fields[name]) for name in ('progress', 'workers', 'hours'))
     flags = []
     if progress is None or not 0 <= progress <= 100:
@@ -226,22 +238,48 @@ def sync_forms(data):
         raise ValueError('body.value debe ser una lista')
     if len(rows) > MAX_SYNC_RECORDS:
         raise ValueError(f'body.value supera el máximo de {MAX_SYNC_RECORDS} registros')
-    reports, errors = [], []
+    reports, pending, errors, seen_ids = [], [], [], set()
     for position, row in enumerate(rows, 1):
         try:
-            reports.append(normalize_json_record(row))
+            report = normalize_json_record(row)
+            record_id = report[0]
+            if record_id in seen_ids:
+                raise ValueError('Id duplicado dentro del lote')
+            seen_ids.add(record_id)
+            reports.append(report)
+        except PendingReport as exc:
+            if exc.record_id in seen_ids:
+                errors.append({'index': position, 'error': 'Id duplicado dentro del lote'})
+            else:
+                seen_ids.add(exc.record_id)
+                pending.append((exc.record_id, exc.area))
         except ValueError as exc:
             errors.append({'index': position, 'error': str(exc)})
-    # The batch is atomic: a malformed row rejects every row, avoiding a silent partial sync.
+    # Missing OT is an explicit pending state. Structural errors still reject the whole batch.
     committed = 0 if errors else len(reports)
+    pending_count = 0 if errors else len(pending)
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
     with database() as conn:
-        if not errors and reports:
-            conn.executemany(UPSERT_REPORT, reports)
-        conn.execute('INSERT INTO sync_log(at,records,source,errors,detail) VALUES (?,?,?,?,?)',
-                     (dt.datetime.now(dt.timezone.utc).isoformat(), committed,
-                      'Power Automate', len(errors),
-                      json.dumps(errors[:20], ensure_ascii=False) if errors else None))
-    return committed, errors
+        if not errors:
+            if reports:
+                conn.executemany(UPSERT_REPORT, reports)
+                conn.executemany('DELETE FROM pending_reports WHERE id=?',
+                                 ((report[0],) for report in reports))
+            if pending:
+                conn.executemany('DELETE FROM reports WHERE id=?',
+                                 ((record_id,) for record_id, _ in pending))
+                conn.executemany('''INSERT INTO pending_reports
+                  (id,area,reason,first_seen_at,updated_at) VALUES (?,?,?,?,?)
+                  ON CONFLICT(id) DO UPDATE SET area=excluded.area,
+                  reason=excluded.reason, updated_at=excluded.updated_at''',
+                                 ((record_id, area, 'OT pendiente', now, now)
+                                  for record_id, area in pending))
+        conn.execute('''INSERT INTO sync_log
+          (at,records,source,errors,detail,pending) VALUES (?,?,?,?,?,?)''',
+                     (now, committed, 'Power Automate', len(errors),
+                      json.dumps(errors[:20], ensure_ascii=False) if errors else None,
+                      pending_count))
+    return committed, pending_count, errors
 
 
 def import_xlsx(blob, source='Carga manual'):
@@ -253,6 +291,8 @@ def import_xlsx(blob, source='Carga manual'):
         raise ValueError('No se encontraron reportes válidos con la estructura de Spence.')
     with database() as conn:
         conn.executemany(UPSERT_REPORT, reports)
+        conn.executemany('DELETE FROM pending_reports WHERE id=?',
+                         ((report[0],) for report in reports))
         conn.execute('INSERT INTO sync_log(at,records,source) VALUES (?,?,?)',
                      (dt.datetime.now(dt.timezone.utc).isoformat(), len(reports), source))
     return len(reports)
@@ -261,7 +301,9 @@ def import_xlsx(blob, source='Carga manual'):
 def payload():
     with database() as conn:
         records = [dict(r) for r in conn.execute('SELECT * FROM reports ORDER BY submitted_at DESC, id DESC')]
-        last = conn.execute('SELECT at,records,source,errors FROM sync_log ORDER BY id DESC LIMIT 1').fetchone()
+        last = conn.execute('''SELECT at,records,source,errors,pending
+          FROM sync_log ORDER BY id DESC LIMIT 1''').fetchone()
+        pending_count = conn.execute('SELECT count(*) FROM pending_reports').fetchone()[0]
     ot_latest = {}
     for r in records:
         ot_latest.setdefault(r['ot'], r)
@@ -271,7 +313,8 @@ def payload():
     return {'reports': records, 'ots': list(ot_latest.values()), 'areas': areas,
             'last_sync': dict(last) if last else None,
             'counts': {'reports': len(records), 'ots': len(ot_latest),
-                       'flagged': sum(bool(r['flags']) for r in ot_latest.values())}}
+                       'flagged': sum(bool(r['flags']) for r in ot_latest.values()),
+                       'pending': pending_count}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -364,12 +407,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(413, json.dumps({'error': 'Solicitud vacía o demasiado grande'}))
             raw = self.rfile.read(length)
             data = json.loads(raw.decode('utf-8'))
-            imported, errors = sync_forms(data)
+            imported, pending, errors = sync_forms(data)
             status = 422 if errors else 200
-            result = 'rejected' if errors else 'success'
+            result = ('rejected' if errors else
+                      'success_with_pending' if pending else 'success')
             self.send(status, json.dumps({'status': result, 'atomic': True,
                                           'processed': len(data['body']['value']),
+                                          'imported': imported,
                                           'upserted': imported,
+                                          'pending': pending,
                                           'rejected': len(data['body']['value']) if errors else 0,
                                           'errors': errors[:20]},
                                          ensure_ascii=False))

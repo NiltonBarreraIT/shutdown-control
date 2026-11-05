@@ -2,7 +2,19 @@ let dataset={reports:[],ots:[],areas:{},counts:{}};
 const $=id=>document.getElementById(id);
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>n===null||n===undefined?'—':`${Math.round(n*10)/10}%`;
-const shortDate=s=>s?String(s).replace('T',' ').slice(0,16):'Sin fecha';
+const shortDate=value=>{
+  if(value===null||value===undefined||value==='')return 'Sin fecha';
+  let text=String(value).trim();
+  if(/^\d+(\.\d+)?$/.test(text)){
+    const serial=Number(text);
+    if(serial>=1&&serial<=2958465){
+      const date=new Date(Date.UTC(1899,11,30)+serial*86400000);
+      text=`${date.getUTCFullYear()}-${String(date.getUTCMonth()+1).padStart(2,'0')}-${String(date.getUTCDate()).padStart(2,'0')} ${String(date.getUTCHours()).padStart(2,'0')}:${String(date.getUTCMinutes()).padStart(2,'0')}`;
+    }
+  }
+  const match=text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/);
+  return match?`${match[3]}-${match[2]}-${match[1]}${match[4]?` ${match[4]}:${match[5]}`:''}`:text.slice(0,16);
+};
 const toast=(text,error=false)=>{const el=$('toast');el.textContent=text;el.className=error?'error':'';el.style.display='block';setTimeout(()=>el.style.display='none',4300)};
 function render(){
   const {reports,ots,areas,counts,last_sync}=dataset;

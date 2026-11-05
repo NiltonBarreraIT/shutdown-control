@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from openpyxl import load_workbook
+from openpyxl.utils.datetime import from_excel
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.getenv('DATABASE_PATH', str(ROOT / 'data' / 'shutdown.db')))
@@ -88,6 +89,17 @@ def number(v):
 def date_text(v):
     if isinstance(v, (dt.date, dt.datetime)):
         return v.isoformat(sep=' ') if isinstance(v, dt.datetime) else v.isoformat()
+    # Microsoft Forms/Excel can expose dates as an Excel serial number.
+    # Convert plausible serials before persisting them instead of displaying
+    # values such as 46331.1761689815 in the dashboard.
+    try:
+        serial = float(v)
+        if 1 <= serial <= 2958465:
+            converted = from_excel(serial)
+            return (converted.isoformat(sep=' ') if isinstance(converted, dt.datetime)
+                    else converted.isoformat())
+    except (TypeError, ValueError, OverflowError):
+        pass
     return value(v)
 
 

@@ -1,4 +1,6 @@
 let dataset={reports:[],ots:[],areas:{},counts:{}};
+let currentPage=1;
+const PAGE_SIZE=10;
 const $=id=>document.getElementById(id);
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=n=>n===null||n===undefined?'—':`${Math.round(n*10)/10}%`;
@@ -29,10 +31,18 @@ function render(){
   filterOrders();
   $('log').innerHTML=reports.slice(0,12).map(r=>`<article class="log-item"><strong>OT ${escapeHTML(r.ot)}</strong>${r.flags.length?'<span class="status warn">Revisar</span>':''}<p>${escapeHTML(r.comment||'Sin reseña técnica ingresada.')}</p><small>${escapeHTML(r.area)} · ${escapeHTML(r.reporter)} · ${escapeHTML(shortDate(r.submitted_at))}</small></article>`).join('')||'<p class="empty">Aún no hay reportes.</p>';
 }
-function filterOrders(){
+function filterOrders(resetPage=false){
+ if(resetPage)currentPage=1;
  const q=$('search').value.toLowerCase(),area=$('area').value,shift=$('shift').value,attention=$('attention').value;
- const rows=dataset.reports.filter(r=>(!area||r.area===area)&&(!shift||r.shift===shift)&&(!q||[r.ot,r.activity,r.comment,r.reporter].join(' ').toLowerCase().includes(q))&&(!attention||(attention==='flag'?r.flags.length:r.progress===0)));
- $('ot-table').innerHTML=rows.map(r=>{const reviewReason=r.flags.length?escapeHTML(r.flags.join(' · ')):'';return `<tr class="clickable" data-ot="${escapeHTML(r.ot)}"><td><span class="ot-id">${escapeHTML(r.ot)}</span><span class="secondary">Actividad ${escapeHTML(r.activity||'Sin indicar')}</span></td><td>${escapeHTML(r.area)}<span class="secondary">${escapeHTML(r.shift||'Sin turno')}</span></td><td><strong>${fmt(r.progress)}</strong><span class="progress"><i style="width:${Math.min(Math.max(r.progress??0,0),100)}%"></i></span></td><td>${escapeHTML(r.reporter||'Sin asignar')}<span class="secondary">${escapeHTML(shortDate(r.report_date))}</span></td><td><span class="status ${r.flags.length?'warn has-tooltip':''}"${r.flags.length?` tabindex="0" aria-label="Revisar: ${reviewReason}" data-tooltip="${reviewReason}"`:''}>${r.flags.length?'Revisar':'Registrada'}</span></td><td>›</td></tr>`}).join('')||'<tr><td colspan="6" class="empty">No hay OT que coincidan.</td></tr>';
+ const rows=dataset.reports.filter(r=>(!area||r.area===area)&&(!shift||r.shift===shift)&&(!q||[r.ot,r.activity,r.comment,r.reporter].join(' ').toLowerCase().includes(q))&&(!attention||(attention==='flag'?r.flags.length:r.progress===0))).sort((a,b)=>String(b.submitted_at??'').localeCompare(String(a.submitted_at??''))||String(b.id??'').localeCompare(String(a.id??''),undefined,{numeric:true}));
+ const totalPages=Math.max(1,Math.ceil(rows.length/PAGE_SIZE));
+ currentPage=Math.min(currentPage,totalPages);
+ const start=(currentPage-1)*PAGE_SIZE;
+ const visibleRows=rows.slice(start,start+PAGE_SIZE);
+ $('ot-table').innerHTML=visibleRows.map(r=>{const reviewReason=r.flags.length?escapeHTML(r.flags.join(' · ')):'';return `<tr class="clickable" data-ot="${escapeHTML(r.ot)}"><td><span class="ot-id">${escapeHTML(r.ot)}</span><span class="secondary">Actividad ${escapeHTML(r.activity||'Sin indicar')}</span></td><td>${escapeHTML(r.area)}<span class="secondary">${escapeHTML(r.shift||'Sin turno')}</span></td><td><strong>${fmt(r.progress)}</strong><span class="progress"><i style="width:${Math.min(Math.max(r.progress??0,0),100)}%"></i></span></td><td>${escapeHTML(r.reporter||'Sin asignar')}<span class="secondary">${escapeHTML(shortDate(r.report_date))}</span></td><td><span class="status ${r.flags.length?'warn has-tooltip':''}"${r.flags.length?` tabindex="0" aria-label="Revisar: ${reviewReason}" data-tooltip="${reviewReason}"`:''}>${r.flags.length?'Revisar':'Registrada'}</span></td><td>›</td></tr>`}).join('')||'<tr><td colspan="6" class="empty">No hay OT que coincidan.</td></tr>';
+ $('page-info').textContent=rows.length?`${start+1}–${Math.min(start+PAGE_SIZE,rows.length)} de ${rows.length} · Página ${currentPage} de ${totalPages}`:'0 resultados';
+ $('page-prev').disabled=currentPage===1;
+ $('page-next').disabled=currentPage===totalPages;
  document.querySelectorAll('[data-ot]').forEach(el=>el.addEventListener('click',()=>detail(el.dataset.ot)));
 }
 function detail(ot){
@@ -42,6 +52,8 @@ function detail(ot){
  $('detail').showModal();
 }
 async function load(){try{const r=await fetch('/api/status');if(!r.ok)throw Error('No fue posible consultar datos');dataset=await r.json();render()}catch(e){toast(e.message,true)}}
-['search','area','shift','attention'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',filterOrders));
+['search','area','shift','attention'].forEach(id=>$(id).addEventListener(id==='search'?'input':'change',()=>filterOrders(true)));
+$('page-prev').addEventListener('click',()=>{currentPage--;filterOrders()});
+$('page-next').addEventListener('click',()=>{currentPage++;filterOrders()});
 $('close').addEventListener('click',()=>$('detail').close());
 load();

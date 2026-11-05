@@ -12,6 +12,15 @@ class FrontendSearchTest(unittest.TestCase):
         self.assertIn("`OP ${r.activity??''}`", javascript)
         self.assertIn('searchText(r).includes(q)', javascript)
 
+    def test_work_order_rows_include_mobile_card_labels(self):
+        javascript = (ROOT / 'app.js').read_text(encoding='utf-8')
+        stylesheet = (ROOT / 'style.css').read_text(encoding='utf-8')
+        for label in ('Orden / actividad', 'Área / turno', 'Avance', 'Responsable', 'Estado'):
+            self.assertIn(f'data-label="{label}"', javascript)
+        self.assertIn('#orders #ot-table tr{', stylesheet)
+        self.assertIn('content:attr(data-label)', stylesheet)
+        self.assertIn('#orders thead{display:none}', stylesheet)
+
 
 if __name__ == '__main__':
     unittest.main()

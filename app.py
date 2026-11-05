@@ -259,6 +259,7 @@ def sync_forms(data):
     committed = 0 if errors else len(reports)
     pending_count = 0 if errors else len(pending)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
+    pending_audit = []
     with database() as conn:
         if not errors:
             if reports:
@@ -266,18 +267,34 @@ def sync_forms(data):
                 conn.executemany('DELETE FROM pending_reports WHERE id=?',
                                  ((report[0],) for report in reports))
             if pending:
-                conn.executemany('DELETE FROM reports WHERE id=?',
-                                 ((record_id,) for record_id, _ in pending))
+                pending_rows = []
+                for record_id, area in pending:
+                    existing = conn.execute(
+                        'SELECT flags FROM reports WHERE id=?', (record_id,)).fetchone()
+                    reason = 'OT pendiente'
+                    if existing:
+                        reason = 'OT eliminada en origen; conserva reporte anterior para revisión'
+                        try:
+                            flags = json.loads(existing['flags'] or '[]')
+                        except (TypeError, json.JSONDecodeError):
+                            flags = []
+                        review_flag = 'OT eliminada en origen: revisar'
+                        if review_flag not in flags:
+                            flags.append(review_flag)
+                        conn.execute('UPDATE reports SET flags=? WHERE id=?',
+                                     (json.dumps(flags), record_id))
+                    pending_rows.append((record_id, area, reason, now, now))
+                    pending_audit.append({'id': record_id, 'reason': reason})
                 conn.executemany('''INSERT INTO pending_reports
                   (id,area,reason,first_seen_at,updated_at) VALUES (?,?,?,?,?)
                   ON CONFLICT(id) DO UPDATE SET area=excluded.area,
                   reason=excluded.reason, updated_at=excluded.updated_at''',
-                                 ((record_id, area, 'OT pendiente', now, now)
-                                  for record_id, area in pending))
+                                 pending_rows)
+        detail = (errors[:20] if errors else pending_audit[:20] if pending_audit else None)
         conn.execute('''INSERT INTO sync_log
           (at,records,source,errors,detail,pending) VALUES (?,?,?,?,?,?)''',
                      (now, committed, 'Power Automate', len(errors),
-                      json.dumps(errors[:20], ensure_ascii=False) if errors else None,
+                      json.dumps(detail, ensure_ascii=False) if detail else None,
                       pending_count))
     return committed, pending_count, errors
 

@@ -45,9 +45,14 @@ def row(record_id='101', area='Filtros', progress='25'):
 
 
 def without_ot(record):
+    return set_ot(record, '')
+
+
+def set_ot(record, ot):
+    area = record['¿Cuál es tu área de trabajo?']
     for key in tuple(record):
-        if ' OT ' in key:
-            record[key] = ''
+        if ' OT ' in key and f'({area})' in key:
+            record[key] = ot
     return record
 
 
@@ -177,6 +182,41 @@ class SyncApiTest(unittest.TestCase):
             self.assertEqual(1, conn.execute('SELECT count(*) FROM pending_reports').fetchone()[0])
             self.assertEqual(1, conn.execute(
                 "SELECT count(*) FROM reports WHERE id='1058'").fetchone()[0])
+
+    def test_preserves_valid_history_when_existing_response_loses_ot(self):
+        original = set_ot(row('HISTORY-1'), '450099')
+        status, result = self.request({'body': {'value': [original]}})
+        self.assertEqual((200, 'success', 1),
+                         (status, result['status'], result['imported']))
+
+        status, result = self.request({'body': {'value': [without_ot(row('HISTORY-1'))]}})
+        self.assertEqual((200, 'success_with_pending', 0, 1),
+                         (status, result['status'], result['imported'], result['pending']))
+        with app.database() as conn:
+            report = conn.execute(
+                "SELECT ot,flags FROM reports WHERE id='HISTORY-1'").fetchone()
+            pending = conn.execute(
+                "SELECT reason FROM pending_reports WHERE id='HISTORY-1'").fetchone()
+            audit = conn.execute(
+                'SELECT detail FROM sync_log ORDER BY id DESC LIMIT 1').fetchone()
+        self.assertEqual('450099', report['ot'])
+        self.assertIn('OT eliminada en origen: revisar', json.loads(report['flags']))
+        self.assertIn('conserva reporte anterior', pending['reason'])
+        self.assertIn('HISTORY-1', audit['detail'])
+
+        recovered = set_ot(row('HISTORY-1', progress='80'), '450100')
+        status, result = self.request({'body': {'value': [recovered]}})
+        self.assertEqual((200, 'success', 1, 0),
+                         (status, result['status'], result['imported'], result['pending']))
+        with app.database() as conn:
+            reports = conn.execute(
+                "SELECT ot,progress,flags FROM reports WHERE id='HISTORY-1'").fetchall()
+            pending_count = conn.execute(
+                "SELECT count(*) FROM pending_reports WHERE id='HISTORY-1'").fetchone()[0]
+        self.assertEqual(1, len(reports))
+        self.assertEqual(('450100', 80.0, []),
+                         (reports[0]['ot'], reports[0]['progress'], json.loads(reports[0]['flags'])))
+        self.assertEqual(0, pending_count)
 
     def test_missing_sync_token_fails_closed_without_breaking_dashboard(self):
         token = app.SYNC_TOKEN

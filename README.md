@@ -36,7 +36,7 @@ No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acci
 - `success_with_pending`: HTTP `200`; las respuestas con OT fueron importadas y las que aún no tienen OT quedaron trazadas por Id en `pending_reports`. La respuesta informa `imported` y `pending`. No se inventan números de OT.
 - `rejected`: HTTP `422`; existe al menos un error estructural real, como Id/área inválidos, tipo no permitido o Id duplicado dentro del lote. La transacción completa se rechaza con `upserted: 0`.
 
-Una respuesta pendiente se elimina de `pending_reports` y se guarda mediante UPSERT en `reports` cuando el mismo Id llega posteriormente con OT. El dashboard muestra fecha UTC, fuente, cantidad importada, pendientes y errores de la última sincronización.
+Una respuesta pendiente se elimina de `pending_reports` y se guarda mediante UPSERT en `reports` cuando el mismo Id llega posteriormente con OT. Si un Id que ya tenía un reporte válido pierde su OT en el origen, el reporte histórico no se elimina: conserva su última OT, recibe la alerta `OT eliminada en origen: revisar` y queda registrado como pendiente con un motivo diferenciado. El evento permanece auditado en `sync_log`. Cuando vuelve a tener OT, el UPSERT actualiza el registro, limpia la alerta derivada y retira el pendiente. El dashboard muestra fecha UTC, fuente, cantidad importada, pendientes y errores de la última sincronización.
 
 ### Prueba local con datos ficticios
 

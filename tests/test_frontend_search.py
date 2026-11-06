@@ -28,6 +28,12 @@ class FrontendSearchTest(unittest.TestCase):
         self.assertIn('const candidates=attention?latestOperations:reports', javascript)
         self.assertIn("attention==='flag'?r.flags.length:r.progress===0", javascript)
 
+    def test_last_sync_uses_santiago_timezone(self):
+        javascript = (ROOT / 'app.js').read_text(encoding='utf-8')
+        self.assertIn("timeZone:'America/Santiago'", javascript)
+        self.assertIn("santiagoDate(last_sync.at)", javascript)
+        self.assertIn('hora de Santiago', javascript)
+
 
 if __name__ == '__main__':
     unittest.main()

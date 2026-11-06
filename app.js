@@ -18,6 +18,13 @@ const shortDate=value=>{
   const match=text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/);
   return match?`${match[3]}-${match[2]}-${match[1]}${match[4]?` ${match[4]}:${match[5]}`:''}`:text.slice(0,16);
 };
+const santiagoDate=value=>{
+  const date=new Date(value);
+  if(Number.isNaN(date.getTime()))return shortDate(value);
+  const parts=new Intl.DateTimeFormat('es-CL',{timeZone:'America/Santiago',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(date);
+  const part=type=>parts.find(item=>item.type===type)?.value||'';
+  return `${part('day')}-${part('month')}-${part('year')} ${part('hour')}:${part('minute')}`;
+};
 const toast=(text,error=false)=>{const el=$('toast');el.textContent=text;el.className=error?'error':'';el.style.display='block';setTimeout(()=>el.style.display='none',4300)};
 const reviewReasons=r=>r.flags.map(flag=>{
   if(flag==='Actividad por revisar'){
@@ -39,7 +46,7 @@ function render(){
   $('users-nav').classList.toggle('hidden',current_user?.role!=='admin');
   $('n-ots').textContent=counts.ots??0;$('n-reports').textContent=counts.reports??0;$('n-flags').textContent=counts.flagged??0;
   $('n-progress').textContent=counts.progress===null||counts.progress===undefined?'—':fmt(counts.progress);
-  $('sync').textContent=last_sync?`Última sincronización: ${shortDate(last_sync.at)} UTC · ${last_sync.records} importado(s) · ${last_sync.pending||0} pendiente(s) · ${last_sync.discrepancies||0} discrepancia(s) OT · ${last_sync.conflicts||0} conflicto(s) · ${last_sync.errors||0} error(es) · ${last_sync.source}`:'Sin sincronización';
+  $('sync').textContent=last_sync?`Última sincronización: ${santiagoDate(last_sync.at)} hora de Santiago · ${last_sync.records} importado(s) · ${last_sync.pending||0} pendiente(s) · ${last_sync.discrepancies||0} discrepancia(s) OT · ${last_sync.conflicts||0} conflicto(s) · ${last_sync.errors||0} error(es) · ${last_sync.source}`:'Sin sincronización';
   const total=Math.max(...Object.values(areas),1);
   $('area-bars').innerHTML=Object.entries(areas).sort((a,b)=>b[1]-a[1]).map(([name,n])=>`<div><div class="bar-label"><span>${escapeHTML(name)}</span><b>${n} reportes</b></div><div class="bar-track"><div class="bar-fill" style="width:${n/total*100}%"></div></div></div>`).join('')||'<p class="empty">Importa el Excel para comenzar.</p>';
   const selected=$('area').value;

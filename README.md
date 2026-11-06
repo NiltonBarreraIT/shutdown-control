@@ -44,7 +44,7 @@ Las filas completamente vacías que permanezcan dentro de la tabla de Excel desp
 
 La primera OT válida asociada a un Id de Forms es inmutable. El sistema nunca genera, incrementa, renumera ni sustituye ese identificador. Si el mismo Id llega con otra OT, conserva la original, actualiza los demás campos, añade la alerta `OT discrepante en origen: revisar` y registra ambas OT en `ot_discrepancies`. Una respuesta pendiente se elimina de `pending_reports` y registra su primera OT mediante UPSERT cuando el mismo Id llega posteriormente con una OT válida.
 
-Si un Id que ya tenía un reporte válido pierde su OT en el origen, el reporte histórico tampoco se elimina: conserva su última OT, recibe la alerta `OT eliminada en origen: revisar` y queda registrado como pendiente con un motivo diferenciado. El evento permanece auditado en `sync_log`. Cuando vuelve a tener la misma OT, el UPSERT actualiza el registro, limpia la alerta derivada y retira el pendiente. El dashboard muestra fecha UTC, fuente, cantidad importada, pendientes, discrepancias y errores de la última sincronización.
+Si un Id que ya tenía un reporte válido pierde su OT en el origen, el reporte histórico tampoco se elimina: conserva su última OT, recibe la alerta `OT eliminada en origen: revisar` y queda registrado como pendiente con un motivo diferenciado. El evento permanece auditado en `sync_log`. Cuando vuelve a tener la misma OT, el UPSERT actualiza el registro, limpia la alerta derivada y retira el pendiente. El dashboard muestra la última sincronización en la zona `America/Santiago`, aplicando automáticamente UTC−3 o UTC−4 según corresponda, además de la fuente, cantidad importada, pendientes, discrepancias y errores.
 
 ### Prueba local con datos ficticios
 

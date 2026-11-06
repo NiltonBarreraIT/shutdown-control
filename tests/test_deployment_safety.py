@@ -81,6 +81,8 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('id="bhp-cutoff"', page)
         self.assertIn('type="datetime-local"', page)
         self.assertIn("2026-11-06T08:00", script)
+        stylesheet = (ROOT / 'style.css').read_text(encoding='utf-8')
+        self.assertIn('.executive-kpis{display:grid;grid-template-columns:repeat(4', stylesheet)
 
 
 class MigrationSafetyTest(unittest.TestCase):

@@ -39,6 +39,35 @@ class PlanImportTest(unittest.TestCase):
                          (result['version']['id'], result['counts']['tasks'],
                           result['counts']['matched'], result['counts']['unmatched']))
 
+    def test_detects_real_export_header_after_summary_and_allows_segments(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append([None, 'ACTIVIDADES E&I ITS POR DÍA Y ÁREA'])
+        sheet.append([None, 'Shutdown nov-2026'])
+        for _ in range(10):
+            sheet.append([])
+        sheet.append(['Inicio', 'Término', 'Turno', 'Jornada', 'Área', 'Sistema',
+                      'Actividad (Gantt)', 'Equipo (TAG)', 'OT', 'Op.', 'Dot.',
+                      'Dur (h)', 'HH', 'ID Gantt', 'Observación'])
+        sheet.append(['2026-11-03 19:00', '2026-11-03 22:00', 'Día', '', 'Flotación',
+                      '', 'Tramo T1', '', 419355062, '0020', 1, 3, 3, 2964, ''])
+        sheet.append(['2026-11-04 05:00', '2026-11-04 08:00', 'Noche', '', 'Flotación',
+                      '', 'Tramo T2', '', 419355062, '0020', 1, 3, 3, 2967, ''])
+        sheet.append(['2026-11-04 09:00', '2026-11-04 10:00', 'Día', '', 'Molibdeno',
+                      '', 'Actividad pendiente de identificación', '', None, None,
+                      1, 1, 1, 3000, 'Sin OT ni operación en la Gantt'])
+        output = io.BytesIO()
+        workbook.save(output)
+        tasks = app.parse_plan_xlsx(output.getvalue())
+        self.assertEqual(3, len(tasks))
+        self.assertEqual(('Tramo T1', '0020', 'Flotación'),
+                         (tasks[0]['name'], tasks[0]['activity'], tasks[0]['area']))
+        with app.database() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
+        app.save_plan(tasks, 'real.xlsx', 'xlsx', user_id)
+        counts = app.plan_payload()['counts']
+        self.assertEqual((3, 1), (counts['tasks'], counts['missing_ids']))
+
     def test_imports_project_xml_custom_fields_and_name_fallback(self):
         xml = b'''<?xml version="1.0" encoding="UTF-8"?>
         <Project xmlns="http://schemas.microsoft.com/project">

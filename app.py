@@ -473,17 +473,17 @@ def import_xlsx(blob, source='Carga manual'):
 
 
 PLAN_ALIASES = {
-    'uid': ('uid', 'id unico', 'unique id', 'id'),
+    'uid': ('uid', 'id unico', 'unique id', 'id gantt', 'id'),
     'wbs': ('wbs', 'edt', 'outline number'),
     'ot': ('ot', 'orden de trabajo', 'work order'),
     'activity': ('op', 'actividad', 'activity', 'operation'),
-    'name': ('nombre', 'nombre de tarea', 'task name', 'tarea'),
+    'name': ('nombre', 'nombre de tarea', 'task name', 'tarea', 'actividad gantt'),
     'area': ('area',),
     'start': ('comienzo', 'inicio', 'start'),
     'finish': ('fin', 'termino', 'finish'),
     'baseline_start': ('comienzo previsto', 'baseline start', 'inicio linea base'),
     'baseline_finish': ('fin previsto', 'baseline finish', 'termino linea base'),
-    'duration': ('duracion', 'duration', 'duracion horas'),
+    'duration': ('duracion', 'duration', 'duracion horas', 'dur h'),
     'weight': ('peso', 'ponderacion', 'weight'),
     'critical': ('critica', 'critico', 'critical'),
     'milestone': ('hito', 'milestone'),
@@ -519,12 +519,16 @@ def plan_task(values):
                           name, re.IGNORECASE)
         activity = match.group(1) if match else ''
     activity = plan_identifier(activity, 3)
-    if not name or not ot or not activity:
+    if not name:
         return None
     duration = plan_number(values.get('duration'))
+    area_raw = value(values.get('area'))
+    area_lookup = {normalized_key(area): area for area in AREA_COLUMNS}
+    area_lookup['flotacin'] = 'Flotación'
+    area = area_lookup.get(normalized_key(area_raw), area_raw)
     return {'source_uid': value(values.get('uid')), 'wbs': value(values.get('wbs')),
             'ot': ot, 'activity': activity, 'name': name,
-            'area': value(values.get('area')), 'start_at': date_text(values.get('start')),
+            'area': area, 'start_at': date_text(values.get('start')),
             'finish_at': date_text(values.get('finish')),
             'baseline_start': date_text(values.get('baseline_start')),
             'baseline_finish': date_text(values.get('baseline_finish')),
@@ -537,26 +541,29 @@ def plan_task(values):
 def parse_plan_xlsx(blob):
     workbook = load_workbook(io.BytesIO(blob), read_only=True, data_only=True)
     rows = workbook.active.iter_rows(values_only=True)
-    headers = next(rows, None)
-    if not headers:
-        raise ValueError('El Excel no contiene encabezados')
-    index = {normalized_key(header): position for position, header in enumerate(headers)
-             if value(header)}
-    mapping = {}
-    for field, aliases in PLAN_ALIASES.items():
-        for alias in aliases:
-            if normalized_key(alias) in index:
-                mapping[field] = index[normalized_key(alias)]
-                break
-    missing = [label for field, label in (('ot', 'OT'), ('activity', 'OP/actividad'),
-                                           ('name', 'nombre de tarea'))
-               if field not in mapping]
-    if missing:
-        raise ValueError('Faltan columnas requeridas: ' + ', '.join(missing))
+    mapping = None
+    for row_number, candidate in enumerate(rows, 1):
+        index = {normalized_key(header): position for position, header in enumerate(candidate)
+                 if value(header)}
+        candidate_mapping = {}
+        for field, aliases in PLAN_ALIASES.items():
+            for alias in aliases:
+                if normalized_key(alias) in index:
+                    candidate_mapping[field] = index[normalized_key(alias)]
+                    break
+        if all(field in candidate_mapping for field in ('ot', 'activity', 'name')):
+            mapping = candidate_mapping
+            break
+        if row_number >= 50:
+            break
+    if mapping is None:
+        raise ValueError('No se encontró una fila de encabezados con OT, OP/actividad y nombre de tarea')
     tasks = []
-    for row in rows:
-        task = plan_task({field: row[position] if position < len(row) else None
-                          for field, position in mapping.items()})
+    for row_number, row in enumerate(rows, row_number + 1):
+        values = {field: row[position] if position < len(row) else None
+                  for field, position in mapping.items()}
+        values.setdefault('uid', str(row_number))
+        task = plan_task(values)
         if task:
             tasks.append(task)
     return tasks
@@ -612,9 +619,9 @@ def parse_plan_xml(blob):
 def save_plan(tasks, filename, source_format, user_id):
     if not tasks:
         raise ValueError('No se encontraron tareas con OT, OP y nombre válidos')
-    keys = [(task['ot'], task['activity']) for task in tasks]
+    keys = [(task['ot'], task['activity'], task['source_uid']) for task in tasks]
     if len(keys) != len(set(keys)):
-        raise ValueError('La Carta Gantt contiene combinaciones OT/OP duplicadas')
+        raise ValueError('La Carta Gantt contiene filas duplicadas con la misma OT, OP e ID Gantt')
     with database() as conn:
         conn.execute('UPDATE plan_versions SET active=0')
         cursor = conn.execute('''INSERT INTO plan_versions
@@ -637,7 +644,7 @@ def plan_payload():
           WHERE plan_versions.active=1 ORDER BY plan_versions.id DESC LIMIT 1''').fetchone()
         if not version:
             return {'version': None, 'tasks': [], 'counts': {'tasks': 0, 'matched': 0,
-                    'unmatched': 0, 'critical': 0}}
+                    'unmatched': 0, 'missing_ids': 0, 'critical': 0}}
         tasks = [dict(row) for row in conn.execute('''SELECT plan_tasks.*,
           reports.id AS report_id,reports.progress AS actual_progress,
           reports.submitted_at AS last_report_at
@@ -647,9 +654,11 @@ def plan_payload():
           WHERE plan_tasks.version_id=? ORDER BY plan_tasks.wbs,plan_tasks.id''',
                                                    (version['id'],))]
     matched = sum(task['report_id'] is not None for task in tasks)
+    missing_ids = sum(not task['ot'] or not task['activity'] for task in tasks)
     return {'version': dict(version), 'tasks': tasks,
             'counts': {'tasks': len(tasks), 'matched': matched,
                        'unmatched': len(tasks) - matched,
+                       'missing_ids': missing_ids,
                        'critical': sum(task['critical'] for task in tasks)}}
 
 

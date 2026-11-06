@@ -155,7 +155,7 @@ El módulo independiente **Planificación y Gantt** (`/plan`) recibe una Carta G
 
 Excel debe incluir como mínimo las columnas `OT`, `OP` o `Actividad`, y `Nombre de tarea`. También reconoce WBS/EDT, área, inicio, término, fechas de línea base, duración, peso, criticidad, hitos y predecesoras. Project XML puede obtener OT, OP, área y peso desde campos personalizados con esos alias; si OT y OP no están en campos personalizados, intenta reconocer textos como `OT 419433450 - OP 020` en el nombre de la tarea.
 
-El módulo vincula cada tarea con el último reporte real que tenga la misma combinación `OT + OP`. Muestra tareas vinculadas, sin reporte y críticas. No calcula todavía avance planificado, desviación ni proyección de término: esos cálculos se habilitarán después de validar la estructura y calendarios de una exportación real de Microsoft Project.
+El módulo importa también las actividades que no tienen OT u OP y las muestra con estado **Sin OT/OP**, porque siguen formando parte del trabajo planificado. Esas actividades no pueden vincularse automáticamente hasta contar con ambos identificadores. Para las demás, vincula cada tarea con el último reporte real que tenga la misma combinación `OT + OP`. No calcula todavía avance planificado, desviación ni proyección de término: esos cálculos se habilitarán después de validar la estructura y calendarios de una exportación real de Microsoft Project.
 
 ### Usuarios y permisos
 

@@ -35,7 +35,9 @@ No confirme el `.env` en Git ni incluya el token en URL, cuerpo, nombres de acci
 - `success`: HTTP `200`; todas las respuestas fueron importadas.
 - `success_with_pending`: HTTP `200`; las respuestas con OT fueron importadas y las que aún no tienen OT quedaron trazadas por Id en `pending_reports`. La respuesta informa `imported` y `pending`. No se inventan números de OT.
 - `success_with_review`: HTTP `200`; los demás campos fueron actualizados, pero una OT recibida no coincide con la OT original e inmutable. La respuesta informa `discrepancies` y el reporte queda marcado para revisión.
-- `rejected`: HTTP `422`; existe al menos un error estructural real, como Id/área inválidos, tipo no permitido o Id duplicado dentro del lote. La transacción completa se rechaza con `upserted: 0`.
+- `rejected`: HTTP `422`; existe al menos un error estructural real, como Id/área inválidos o tipo no permitido. La transacción completa se rechaza con `upserted: 0`.
+
+Si Power Automate envía el mismo `Id` más de una vez dentro del lote, la API conserva la primera aparición e ignora las siguientes aunque su contenido difiera. La respuesta informa la cantidad en `duplicates_ignored`; el ID no se duplica en SQLite y los demás reportes del lote se guardan normalmente.
 
 La primera OT válida asociada a un Id de Forms es inmutable. El sistema nunca genera, incrementa, renumera ni sustituye ese identificador. Si el mismo Id llega con otra OT, conserva la original, actualiza los demás campos, añade la alerta `OT discrepante en origen: revisar` y registra ambas OT en `ot_discrepancies`. Una respuesta pendiente se elimina de `pending_reports` y registra su primera OT mediante UPSERT cuando el mismo Id llega posteriormente con una OT válida.
 

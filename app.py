@@ -520,23 +520,24 @@ def sync_forms(data):
         raise ValueError('body.value debe ser una lista')
     if len(rows) > MAX_SYNC_RECORDS:
         raise ValueError(f'body.value supera el máximo de {MAX_SYNC_RECORDS} registros')
-    reports, pending, errors, seen_ids, seen_reports = [], [], [], set(), {}
+    reports, pending, errors, seen_ids = [], [], [], set()
     batch_duplicates = 0
     for position, row in enumerate(rows, 1):
         try:
             report = normalize_json_record(row)
             record_id = report[0]
             if record_id in seen_ids:
-                if record_id in seen_reports and report_fingerprint(seen_reports[record_id]) == report_fingerprint(report):
-                    batch_duplicates += 1
-                    continue
-                raise ValueError('Id duplicado con contenido diferente dentro del lote')
+                # Forms Id is the report identity. Power Automate can occasionally
+                # return the same table row twice after rows are deleted/reordered.
+                # Keep the first occurrence so one duplicate cannot reject the
+                # other valid reports in the batch or overwrite ambiguous data.
+                batch_duplicates += 1
+                continue
             seen_ids.add(record_id)
-            seen_reports[record_id] = report
             reports.append(report)
         except PendingReport as exc:
             if exc.record_id in seen_ids:
-                errors.append({'index': position, 'error': 'Id duplicado dentro del lote'})
+                batch_duplicates += 1
             else:
                 seen_ids.add(exc.record_id)
                 pending.append((exc.record_id, exc.area))

@@ -350,13 +350,28 @@ class SyncApiTest(unittest.TestCase):
                 "SELECT count(*) FROM report_conflicts WHERE form_id='IMMUTABLE-3'").fetchone()[0]
         self.assertEqual(1, conflicts)
 
-    def test_different_duplicate_id_inside_batch_is_rejected(self):
+    def test_different_duplicate_id_inside_batch_keeps_first_and_imports_batch(self):
         first = row('DUP-CONFLICT', progress='20')
         second = row('DUP-CONFLICT', progress='30')
-        status, result = self.request({'body': {'value': [first, second]}})
-        self.assertEqual((422, 'rejected', 0),
-                         (status, result['status'], result['imported']))
-        self.assertIn('contenido diferente', result['errors'][0]['error'])
+        other = row('DUP-OTHER', progress='40')
+        status, result = self.request({'body': {'value': [first, second, other]}})
+        self.assertEqual((200, 'success', 2, 1, []),
+                         (status, result['status'], result['imported'],
+                          result['duplicates_ignored'], result['errors']))
+        with app.database() as conn:
+            reports = conn.execute(
+                "SELECT id,progress FROM reports ORDER BY id").fetchall()
+        self.assertEqual([('DUP-CONFLICT', 20.0), ('DUP-OTHER', 40.0)],
+                         [tuple(report) for report in reports])
+
+    def test_duplicate_pending_id_does_not_reject_other_reports(self):
+        pending = without_ot(row('DUP-PENDING'))
+        status, result = self.request({'body': {'value': [
+            pending, dict(pending), row('VALID-AFTER-DUP')]}})
+        self.assertEqual((200, 'success_with_pending', 1, 1, 1, []),
+                         (status, result['status'], result['imported'],
+                          result['pending'], result['duplicates_ignored'],
+                          result['errors']))
 
     def test_progress_over_100_is_audited_by_operation(self):
         first = set_ot(row('OVER-1', progress='70'), '450099')

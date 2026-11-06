@@ -158,7 +158,7 @@ class SyncApiTest(unittest.TestCase):
             self.assertEqual('DIA', item['shift'])
             self.assertEqual('2026-11-05', item['report_date'])
             self.assertEqual(f'45000{AREAS.index(area) + 1}', item['ot'])
-            self.assertEqual(('10', 25.0, 4.0, 6.0),
+            self.assertEqual(('0010', 25.0, 4.0, 6.0),
                              (item['activity'], item['progress'], item['workers'], item['hours']))
             self.assertEqual(f'Reseña ficticia {area}', item['comment'])
             self.assertEqual([f'https://example.invalid/{area}/antes',
@@ -239,13 +239,14 @@ class SyncApiTest(unittest.TestCase):
             log = conn.execute('SELECT records,errors FROM sync_log').fetchone()
             self.assertEqual((0, 1), tuple(log))
 
-    def test_rejects_duplicate_forms_id_inside_one_batch(self):
+    def test_ignores_identical_duplicate_forms_id_inside_one_batch(self):
         status, result = self.request({'body': {'value': [row('DUP-1'), row('DUP-1')]}})
-        self.assertEqual((422, 'rejected', 0, 0),
+        self.assertEqual((200, 'success', 1, 0),
                          (status, result['status'], result['imported'], result['pending']))
-        self.assertIn('Id duplicado', result['errors'][0]['error'])
+        self.assertEqual(1, result['duplicates_ignored'])
+        self.assertEqual([], result['errors'])
         with app.database() as conn:
-            self.assertEqual(0, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
+            self.assertEqual(1, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
             self.assertEqual(0, conn.execute('SELECT count(*) FROM pending_reports').fetchone()[0])
 
     def test_imports_58_and_tracks_2_pending_without_ot(self):
@@ -297,7 +298,7 @@ class SyncApiTest(unittest.TestCase):
 
         recovered = set_ot(row('HISTORY-1', progress='80'), '450099')
         status, result = self.request({'body': {'value': [recovered]}})
-        self.assertEqual((200, 'success', 1, 0),
+        self.assertEqual((200, 'success_with_review', 1, 0),
                          (status, result['status'], result['imported'], result['pending']))
         with app.database() as conn:
             reports = conn.execute(
@@ -344,6 +345,27 @@ class SyncApiTest(unittest.TestCase):
             report = conn.execute(
                 "SELECT ot,progress FROM reports WHERE id='IMMUTABLE-3'").fetchone()
         self.assertEqual(('450099', 50.0), tuple(report))
+        with app.database() as conn:
+            conflicts = conn.execute(
+                "SELECT count(*) FROM report_conflicts WHERE form_id='IMMUTABLE-3'").fetchone()[0]
+        self.assertEqual(1, conflicts)
+
+    def test_different_duplicate_id_inside_batch_is_rejected(self):
+        first = row('DUP-CONFLICT', progress='20')
+        second = row('DUP-CONFLICT', progress='30')
+        status, result = self.request({'body': {'value': [first, second]}})
+        self.assertEqual((422, 'rejected', 0),
+                         (status, result['status'], result['imported']))
+        self.assertIn('contenido diferente', result['errors'][0]['error'])
+
+    def test_progress_over_100_is_audited_by_operation(self):
+        first = set_ot(row('OVER-1', progress='70'), '450099')
+        second = set_ot(row('OVER-2', progress='50'), '450099')
+        self.request({'body': {'value': [first, second]}})
+        with app.database() as conn:
+            anomaly = conn.execute('''SELECT raw_progress,resolved_at
+              FROM operation_anomalies WHERE ot='450099' AND activity='0010' ''').fetchone()
+        self.assertEqual((120.0, None), tuple(anomaly))
 
     def test_operational_fields_update_while_ot_stays_immutable(self):
         self.request({'body': {'value': [

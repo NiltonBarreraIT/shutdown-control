@@ -23,6 +23,7 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('users.js', dockerfile)
         self.assertIn('plan.html', dockerfile)
         self.assertIn('plan.js', dockerfile)
+        self.assertIn('progress_model.py', dockerfile)
 
     def test_modules_share_one_compact_navigation(self):
         dashboard = (ROOT / 'index.html').read_text(encoding='utf-8')
@@ -66,7 +67,7 @@ class DeploymentConfigurationTest(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', page)
         for calculation in ('plannedProgress', 'programMetrics', 'comparisonState'):
             self.assertIn(calculation, script)
-        self.assertIn('Estimación lineal ponderada por duración', page)
+        self.assertIn('Cálculo backend acumulado por OT/OP', page)
 
     def test_plan_phase_three_exposes_executive_curve(self):
         page = (ROOT / 'plan.html').read_text(encoding='utf-8')
@@ -120,11 +121,12 @@ class MigrationSafetyTest(unittest.TestCase):
         self.assertEqual(('LEGACY-1', '450099', 20.0, 'Registro ficticio previo'),
                          tuple(report))
         self.assertEqual((1, 'Versión anterior'), tuple(old_log))
-        self.assertTrue({'errors', 'detail', 'pending', 'discrepancies'} <= columns)
-        self.assertTrue({'shift', 'journey'} <= plan_columns)
+        self.assertTrue({'errors', 'detail', 'pending', 'discrepancies', 'conflicts'} <= columns)
+        self.assertTrue({'shift', 'journey', 'planned_hh'} <= plan_columns)
         self.assertTrue({'reports', 'sync_log', 'pending_reports',
                          'ot_discrepancies', 'users', 'sessions',
-                         'login_attempts', 'plan_versions', 'plan_tasks'} <= tables)
+                         'login_attempts', 'plan_versions', 'plan_tasks',
+                         'report_conflicts', 'operation_anomalies'} <= tables)
 
 
 if __name__ == '__main__':

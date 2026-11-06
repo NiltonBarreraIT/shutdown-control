@@ -153,15 +153,26 @@ El token de Power Automate continúa siendo independiente y no utiliza las sesio
 
 El módulo independiente **Planificación y Gantt** (`/plan`) recibe una Carta Gantt en Excel `.xlsx` o en XML exportado desde Microsoft Project. Cada importación crea una versión nueva y conserva las anteriores en SQLite; sólo la última queda activa. La carga está restringida a administradores y planificadores, mientras que los demás roles pueden consultar la versión activa.
 
-Excel debe incluir como mínimo las columnas `OT`, `OP` o `Actividad`, y `Nombre de tarea`. También reconoce WBS/EDT, área, inicio, término, fechas de línea base, duración, peso, criticidad, hitos y predecesoras. Project XML puede obtener OT, OP, área y peso desde campos personalizados con esos alias; si OT y OP no están en campos personalizados, intenta reconocer textos como `OT 419433450 - OP 020` en el nombre de la tarea.
+Excel debe incluir como mínimo las columnas `OT`, `OP` o `Actividad`, y `Nombre de tarea`. También reconoce WBS/EDT, área, inicio, término, fechas de línea base, duración, **HH planificadas**, peso, criticidad, hitos y predecesoras. Project XML puede obtener esos campos desde atributos personalizados; si OT y OP no están disponibles, intenta reconocer textos como `OT 419433450 - OP 020` en el nombre de la tarea.
 
-El módulo importa también las actividades que no tienen OT u OP, porque siguen formando parte del trabajo planificado. Las identifica con una advertencia de calidad de datos y permite filtrarlas; no pueden vincularse automáticamente hasta contar con ambos identificadores. Para las demás, vincula cada tarea con el último reporte real que tenga la misma combinación `OT + OP`.
+El módulo importa también las actividades que no tienen OT u OP, porque siguen formando parte del trabajo planificado. Las identifica con una advertencia de calidad de datos y permite filtrarlas; no pueden vincularse automáticamente hasta contar con ambos identificadores. Para las demás, acumula todos los incrementos válidos que tengan la misma combinación `OT + OP`.
 
 La primera fase de control operacional clasifica las actividades según la hora local del navegador en **vencidas**, **en ejecución**, **sin reporte iniciado**, **próximas 12 horas**, **programadas** y **completadas**. Incluye KPI y filtros por estado, área, turno, fecha y texto. Los estados se calculan usando inicio, término y avance real; una actividad completada requiere 100% reportado.
 
 La segunda fase agrega una estimación de **avance planificado versus real**, desviación en puntos porcentuales y horas de duración equivalentes, semáforo del programa, proyección lineal de término y clasificación de actividades adelantadas, atrasadas o en línea. El avance global se pondera por la duración de cada actividad. Como el Excel operativo actual no contiene línea base, pesos ni calendarios, estos indicadores se presentan explícitamente como estimaciones lineales; una exportación XML completa de Microsoft Project permitirá refinar el cálculo en una fase posterior.
 
 La tercera fase incorpora una **Curva S** que reconstruye el avance real histórico desde los reportes de terreno y lo compara con la curva planificada. También presenta SPI estimado, área con mayor desviación, lookahead de 12 horas y una tabla de desempeño por área. El historial se obtiene directamente de los reportes asociados a las OT/OP de la versión activa, sin modificar la fuente importada.
+
+### Fórmulas compartidas de avance
+
+- `Avance OP original = Σ incrementos válidos`. El valor original se conserva; el indicador visible se limita a 100%.
+- `Avance OT = Σ(peso OP × avance OP) / Σ(pesos OP)`.
+- `Avance global = Σ(peso OP × avance OP) / Σ(pesos OP)`.
+- La ponderación usa una sola metodología coherente por conjunto: HH planificadas si todas las OP las poseen; en caso contrario, duración si está completa; finalmente ponderación uniforme.
+- `SPI = avance real / avance planificado` cuando el programado es mayor que cero.
+- `HH ejecutadas estimadas = Σ(trabajadores × horas reportadas)`; nunca se utilizan como peso planificado.
+- Cada corte histórico excluye reportes posteriores. La proyección base usa el promedio de incrementos positivos de los últimos tres cortes; los escenarios optimista y conservador aplican ±20% al ritmo base.
+- La zona horaria de cálculo es `America/Santiago`.
 
 ### Usuarios y permisos
 
@@ -182,14 +193,11 @@ Power Automate es el mecanismo oficial de sincronización con el archivo de repo
 
 Los reportes pueden contener datos personales, reseñas operacionales y fotografías de faena. Verifique la autorización de BHP/ITS para procesar y replicar esos datos en la VPS antes de activar el flujo con información real.
 
-## Criterios de cálculo
+## Criterios de auditoría
 
-- Una OT es identificada por su número. La última actualización se elige por fecha/hora de finalización, luego ID.
-- El porcentaje mostrado es el registrado en el último reporte. El promedio de porcentajes de últimas OT, cuando exista, es **referencial**, no avance físico ponderado del proyecto.
-- Los registros con porcentajes inválidos o incompletos quedan en bitácora sin entrar al promedio.
-- La columna de horas se muestra conforme se reporta, sin asumir si corresponde a horas de ejecución u horas-hombre.
-- Un comentario de bloqueo en avance 0 genera una alerta de revisión, pero no determina por sí solo su criticidad operacional.
-
-## Próxima fase
-
-Incorporar el plan maestro de OT y sus ponderaciones para calcular avance físico planificado versus reportado. Después: criticidad, fechas planificadas, alertas por SLA y reportes por turno.
+- El Id de Microsoft Forms es la identidad del incremento. Reimportar un Id idéntico no duplica avance.
+- El mismo Id con contenido diferente conserva una auditoría en `report_conflicts` y queda informado para revisión.
+- Una suma por OP superior a 100% se registra en `operation_anomalies`; la interfaz muestra máximo 100% sin perder el valor recibido.
+- Registros con OT/OP que no existen en la planificación activa se conservan con alerta de revisión.
+- Un comentario de bloqueo con avance 0 genera una alerta, pero no determina por sí solo criticidad operacional.
+- La auditoría técnica previa a esta corrección está documentada en `docs/AUDITORIA_MODELO_OT_OP_2026-11-06.md`.

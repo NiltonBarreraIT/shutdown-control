@@ -38,9 +38,8 @@ function render(){
   $('account-name').textContent=current_user?`${current_user.username} · ${current_user.role_label}`:'';
   $('users-nav').classList.toggle('hidden',current_user?.role!=='admin');
   $('n-ots').textContent=counts.ots??0;$('n-reports').textContent=counts.reports??0;$('n-flags').textContent=counts.flagged??0;
-  const valid=ots.filter(r=>r.progress!==null&&r.progress!==undefined);
-  $('n-progress').textContent=valid.length?fmt(valid.reduce((s,r)=>s+r.progress,0)/valid.length):'—';
-  $('sync').textContent=last_sync?`Última sincronización: ${shortDate(last_sync.at)} UTC · ${last_sync.records} importado(s) · ${last_sync.pending||0} pendiente(s) · ${last_sync.discrepancies||0} discrepancia(s) OT · ${last_sync.errors||0} error(es) · ${last_sync.source}`:'Sin sincronización';
+  $('n-progress').textContent=counts.progress===null||counts.progress===undefined?'—':fmt(counts.progress);
+  $('sync').textContent=last_sync?`Última sincronización: ${shortDate(last_sync.at)} UTC · ${last_sync.records} importado(s) · ${last_sync.pending||0} pendiente(s) · ${last_sync.discrepancies||0} discrepancia(s) OT · ${last_sync.conflicts||0} conflicto(s) · ${last_sync.errors||0} error(es) · ${last_sync.source}`:'Sin sincronización';
   const total=Math.max(...Object.values(areas),1);
   $('area-bars').innerHTML=Object.entries(areas).sort((a,b)=>b[1]-a[1]).map(([name,n])=>`<div><div class="bar-label"><span>${escapeHTML(name)}</span><b>${n} reportes</b></div><div class="bar-track"><div class="bar-fill" style="width:${n/total*100}%"></div></div></div>`).join('')||'<p class="empty">Importa el Excel para comenzar.</p>';
   const selected=$('area').value;

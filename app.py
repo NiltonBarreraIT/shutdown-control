@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from openpyxl import load_workbook
 from openpyxl.utils.datetime import from_excel
+from progress_model import CHILE, curve as progress_curve, moment as progress_moment, projections, summarize
 
 ROOT = Path(__file__).resolve().parent
 DB = Path(os.getenv('DATABASE_PATH', str(ROOT / 'data' / 'shutdown.db')))
@@ -58,7 +59,7 @@ def db_conn():
     conn.execute('''CREATE TABLE IF NOT EXISTS sync_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, records INTEGER, source TEXT,
       errors INTEGER DEFAULT 0, detail TEXT, pending INTEGER DEFAULT 0,
-      discrepancies INTEGER DEFAULT 0)''')
+      discrepancies INTEGER DEFAULT 0, conflicts INTEGER DEFAULT 0)''')
     conn.execute('''CREATE TABLE IF NOT EXISTS pending_reports (
       id TEXT PRIMARY KEY, area TEXT, reason TEXT,
       first_seen_at TEXT, updated_at TEXT)''')
@@ -67,6 +68,17 @@ def db_conn():
       received_ot TEXT, source TEXT, first_seen_at TEXT, last_seen_at TEXT,
       occurrences INTEGER DEFAULT 1,
       UNIQUE(form_id, original_ot, received_ot))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS report_conflicts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, form_id TEXT NOT NULL,
+      existing_payload TEXT NOT NULL, received_payload TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+      occurrences INTEGER DEFAULT 1,
+      UNIQUE(form_id, existing_payload, received_payload))''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS operation_anomalies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, ot TEXT NOT NULL, activity TEXT NOT NULL,
+      raw_progress REAL NOT NULL, detected_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL, resolved_at TEXT,
+      UNIQUE(ot,activity))''')
     conn.execute('''CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'admin',
@@ -90,7 +102,7 @@ def db_conn():
       source_uid TEXT, wbs TEXT, ot TEXT NOT NULL, activity TEXT NOT NULL,
       name TEXT NOT NULL, area TEXT, shift TEXT, journey TEXT,
       start_at TEXT, finish_at TEXT,
-      baseline_start TEXT, baseline_finish TEXT, duration_hours REAL,
+      baseline_start TEXT, baseline_finish TEXT, duration_hours REAL, planned_hh REAL,
       weight REAL, critical INTEGER DEFAULT 0, milestone INTEGER DEFAULT 0,
       predecessors TEXT, UNIQUE(version_id,ot,activity,source_uid),
       FOREIGN KEY(version_id) REFERENCES plan_versions(id) ON DELETE CASCADE)''')
@@ -103,11 +115,31 @@ def db_conn():
         conn.execute('ALTER TABLE sync_log ADD COLUMN pending INTEGER DEFAULT 0')
     if 'discrepancies' not in columns:
         conn.execute('ALTER TABLE sync_log ADD COLUMN discrepancies INTEGER DEFAULT 0')
+    if 'conflicts' not in columns:
+        conn.execute('ALTER TABLE sync_log ADD COLUMN conflicts INTEGER DEFAULT 0')
     plan_columns = {row['name'] for row in conn.execute('PRAGMA table_info(plan_tasks)')}
     if 'shift' not in plan_columns:
         conn.execute('ALTER TABLE plan_tasks ADD COLUMN shift TEXT')
     if 'journey' not in plan_columns:
         conn.execute('ALTER TABLE plan_tasks ADD COLUMN journey TEXT')
+    if 'planned_hh' not in plan_columns:
+        conn.execute('ALTER TABLE plan_tasks ADD COLUMN planned_hh REAL')
+    # Normalize legacy SAP operation codes so Forms "10" and Gantt "0010"
+    # resolve to the same OT/OP without deleting or merging source records.
+    for row in conn.execute('SELECT id,activity FROM reports'):
+        activity = str(row['activity'] or '').strip()
+        if activity.isdigit() and activity != activity.zfill(4):
+            conn.execute('UPDATE reports SET activity=? WHERE id=?',
+                         (activity.zfill(4), row['id']))
+    for row in conn.execute('SELECT id,activity FROM plan_tasks'):
+        activity = str(row['activity'] or '').strip()
+        if activity.isdigit() and activity != activity.zfill(4):
+            try:
+                conn.execute('UPDATE plan_tasks SET activity=? WHERE id=?',
+                             (activity.zfill(4), row['id']))
+            except sqlite3.IntegrityError:
+                # Preserve both legacy rows if normalization would collide.
+                pass
     database_key = str(DB.resolve())
     if database_key not in BOOTSTRAPPED_DATABASES and USER and PASSWORD:
         bootstrap_user = conn.execute(
@@ -169,6 +201,13 @@ def number(v):
         return None
 
 
+def operation_identifier(item):
+    text = value(item)
+    if re.fullmatch(r'\d+\.0+', text):
+        text = text.split('.', 1)[0]
+    return text.zfill(4) if text.isdigit() else text
+
+
 def date_text(v):
     if isinstance(v, (dt.date, dt.datetime)):
         return v.isoformat(sep=' ') if isinstance(v, dt.datetime) else v.isoformat()
@@ -199,7 +238,7 @@ def normalize(row):
     progress = number(pick(4))
     workers = number(pick(5))
     hours = number(pick(6))
-    activity = value(pick(3))
+    activity = operation_identifier(pick(3))
     flags = []
     if progress is None or not 0 <= progress <= 100:
         flags.append('Avance inválido')
@@ -310,14 +349,18 @@ def normalize_json_record(record):
         progress = None
     if workers is None or hours is None or workers < 0 or hours < 0:
         flags.append('Recursos incompletos')
-    activity = value(fields['activity'])
+    activity = operation_identifier(fields['activity'])
     if not activity or not activity.replace('-', '').strip().isdigit():
         flags.append('Actividad por revisar')
     comment = value(fields['comment'])
     if progress == 0 and comment:
         flags.append('Sin avance: revisar comentario')
+    start_at, submitted_at = date_text(core['start_at']), date_text(core['submitted_at'])
+    if (progress_moment(start_at) and progress_moment(submitted_at) and
+            progress_moment(submitted_at) < progress_moment(start_at)):
+        flags.append('Fecha inconsistente: envío anterior al inicio')
     photos = [value(fields[name]) for name in ('photo_before', 'photo_during', 'photo_after')]
-    return (record_id, date_text(core['start_at']), date_text(core['submitted_at']),
+    return (record_id, start_at, submitted_at,
             value(core['reporter']), value(core['email']), area, value(fields['shift']),
             date_text(fields['report_date']), ot, activity, progress, workers, hours,
             comment, json.dumps(photos), json.dumps(flags),
@@ -332,6 +375,92 @@ UPSERT_REPORT = '''INSERT INTO reports VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?
   activity=excluded.activity, progress=excluded.progress,
   workers=excluded.workers, hours=excluded.hours, comment=excluded.comment,
   photos=excluded.photos, flags=excluded.flags, imported_at=excluded.imported_at'''
+
+REPORT_FIELDS = ('id', 'start_at', 'submitted_at', 'reporter', 'email', 'area', 'shift',
+                 'report_date', 'ot', 'activity', 'progress', 'workers', 'hours',
+                 'comment', 'photos', 'flags')
+
+
+def report_content(report):
+    return {field: report[index] for index, field in enumerate(REPORT_FIELDS)}
+
+
+def report_fingerprint(report):
+    return json.dumps(report_content(report), ensure_ascii=False, sort_keys=True,
+                      separators=(',', ':'))
+
+
+def audit_report_conflicts(conn, reports, observed_at):
+    accepted, conflicts, identical = [], [], 0
+    for report in reports:
+        existing = conn.execute('SELECT * FROM reports WHERE id=?', (report[0],)).fetchone()
+        if not existing:
+            accepted.append(report)
+            continue
+        existing_tuple = tuple(existing[field] for field in REPORT_FIELDS)
+        existing_payload = report_fingerprint(existing_tuple)
+        received_payload = report_fingerprint(report)
+        if existing_payload == received_payload:
+            identical += 1
+            continue
+        conn.execute('''INSERT INTO report_conflicts
+          (form_id,existing_payload,received_payload,first_seen_at,last_seen_at,occurrences)
+          VALUES (?,?,?,?,?,1)
+          ON CONFLICT(form_id,existing_payload,received_payload) DO UPDATE SET
+          last_seen_at=excluded.last_seen_at,occurrences=report_conflicts.occurrences+1''',
+                     (report[0], existing_payload, received_payload,
+                      observed_at, observed_at))
+        conflicts.append({'id': report[0], 'type': 'same_id_different_content'})
+        accepted.append(report)
+    return accepted, conflicts, identical
+
+
+def flag_unplanned_operations(conn, reports):
+    version = conn.execute('''SELECT id FROM plan_versions WHERE active=1
+      ORDER BY id DESC LIMIT 1''').fetchone()
+    if not version:
+        return reports, []
+    planned = {(row['ot'], row['activity']) for row in conn.execute(
+        'SELECT ot,activity FROM plan_tasks WHERE version_id=?', (version['id'],))}
+    planned_ots = {item[0] for item in planned}
+    adjusted, findings = [], []
+    for report in reports:
+        alert = None
+        if report[8] not in planned_ots:
+            alert = 'OT inexistente en planificación activa'
+        elif (report[8], report[9]) not in planned:
+            alert = 'OP inexistente en planificación activa'
+        if alert:
+            item = list(report)
+            flags = json.loads(item[15] or '[]')
+            if alert not in flags:
+                flags.append(alert)
+            item[15] = json.dumps(flags, ensure_ascii=False)
+            report = tuple(item)
+            findings.append({'id': report[0], 'type': alert})
+        adjusted.append(report)
+    return adjusted, findings
+
+
+def refresh_progress_anomalies(conn, observed_at):
+    excessive = list(conn.execute('''SELECT ot,activity,SUM(progress) AS raw_progress
+      FROM reports WHERE progress IS NOT NULL AND ot<>'' AND activity<>''
+      GROUP BY ot,activity HAVING SUM(progress)>100'''))
+    active = {(row['ot'], row['activity']) for row in excessive}
+    for row in excessive:
+        conn.execute('''INSERT INTO operation_anomalies
+          (ot,activity,raw_progress,detected_at,last_seen_at,resolved_at)
+          VALUES (?,?,?,?,?,NULL)
+          ON CONFLICT(ot,activity) DO UPDATE SET raw_progress=excluded.raw_progress,
+          last_seen_at=excluded.last_seen_at,resolved_at=NULL''',
+                     (row['ot'], row['activity'], row['raw_progress'], observed_at, observed_at))
+    for row in conn.execute('''SELECT ot,activity FROM operation_anomalies
+      WHERE resolved_at IS NULL'''):
+        if (row['ot'], row['activity']) not in active:
+            conn.execute('''UPDATE operation_anomalies SET resolved_at=?,last_seen_at=?
+              WHERE ot=? AND activity=?''',
+                         (observed_at, observed_at, row['ot'], row['activity']))
+    return len(excessive)
 
 
 def preserve_registered_ots(conn, reports, source, observed_at):
@@ -391,14 +520,19 @@ def sync_forms(data):
         raise ValueError('body.value debe ser una lista')
     if len(rows) > MAX_SYNC_RECORDS:
         raise ValueError(f'body.value supera el máximo de {MAX_SYNC_RECORDS} registros')
-    reports, pending, errors, seen_ids = [], [], [], set()
+    reports, pending, errors, seen_ids, seen_reports = [], [], [], set(), {}
+    batch_duplicates = 0
     for position, row in enumerate(rows, 1):
         try:
             report = normalize_json_record(row)
             record_id = report[0]
             if record_id in seen_ids:
-                raise ValueError('Id duplicado dentro del lote')
+                if record_id in seen_reports and report_fingerprint(seen_reports[record_id]) == report_fingerprint(report):
+                    batch_duplicates += 1
+                    continue
+                raise ValueError('Id duplicado con contenido diferente dentro del lote')
             seen_ids.add(record_id)
+            seen_reports[record_id] = report
             reports.append(report)
         except PendingReport as exc:
             if exc.record_id in seen_ids:
@@ -414,11 +548,18 @@ def sync_forms(data):
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     pending_audit = []
     discrepancy_audit = []
+    conflict_audit = []
+    identical_count = 0
     with database() as conn:
         if not errors:
             if reports:
                 reports, discrepancy_audit = preserve_registered_ots(
                     conn, reports, 'Power Automate', now)
+                reports, membership_audit = flag_unplanned_operations(conn, reports)
+                reports, conflict_audit, identical_count = audit_report_conflicts(
+                    conn, reports, now)
+                conflict_audit.extend(membership_audit)
+                committed = len(reports)
                 conn.executemany(UPSERT_REPORT, reports)
                 conn.executemany('DELETE FROM pending_reports WHERE id=?',
                                  ((report[0],) for report in reports))
@@ -446,15 +587,17 @@ def sync_forms(data):
                   ON CONFLICT(id) DO UPDATE SET area=excluded.area,
                   reason=excluded.reason, updated_at=excluded.updated_at''',
                                  pending_rows)
-        review_detail = pending_audit + discrepancy_audit
+            refresh_progress_anomalies(conn, now)
+        review_detail = pending_audit + discrepancy_audit + conflict_audit
         detail = errors[:20] if errors else review_detail[:20] if review_detail else None
         conn.execute('''INSERT INTO sync_log
-          (at,records,source,errors,detail,pending,discrepancies)
-          VALUES (?,?,?,?,?,?,?)''',
+          (at,records,source,errors,detail,pending,discrepancies,conflicts)
+          VALUES (?,?,?,?,?,?,?,?)''',
                      (now, committed, 'Power Automate', len(errors),
                       json.dumps(detail, ensure_ascii=False) if detail else None,
-                      pending_count, len(discrepancy_audit)))
-    return committed, pending_count, len(discrepancy_audit), errors
+                      pending_count, len(discrepancy_audit), len(conflict_audit)))
+    return (committed, pending_count, len(discrepancy_audit), len(conflict_audit),
+            identical_count + batch_duplicates, errors)
 
 
 def import_xlsx(blob, source='Carga manual'):
@@ -467,13 +610,18 @@ def import_xlsx(blob, source='Carga manual'):
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     with database() as conn:
         reports, discrepancies = preserve_registered_ots(conn, reports, source, now)
+        reports, membership = flag_unplanned_operations(conn, reports)
+        reports, conflicts, _ = audit_report_conflicts(conn, reports, now)
+        conflicts.extend(membership)
         conn.executemany(UPSERT_REPORT, reports)
         conn.executemany('DELETE FROM pending_reports WHERE id=?',
                          ((report[0],) for report in reports))
+        refresh_progress_anomalies(conn, now)
         conn.execute('''INSERT INTO sync_log
           (at,records,source,detail,discrepancies) VALUES (?,?,?,?,?)''',
                      (now, len(reports), source,
-                      json.dumps(discrepancies[:20], ensure_ascii=False) if discrepancies else None,
+                      json.dumps((discrepancies + conflicts)[:20], ensure_ascii=False)
+                      if discrepancies or conflicts else None,
                       len(discrepancies)))
     return len(reports)
 
@@ -492,6 +640,7 @@ PLAN_ALIASES = {
     'baseline_start': ('comienzo previsto', 'baseline start', 'inicio linea base'),
     'baseline_finish': ('fin previsto', 'baseline finish', 'termino linea base'),
     'duration': ('duracion', 'duration', 'duracion horas', 'dur h'),
+    'planned_hh': ('hh', 'hh planificadas', 'horas hombre', 'planned hh'),
     'weight': ('peso', 'ponderacion', 'weight'),
     'critical': ('critica', 'critico', 'critical'),
     'milestone': ('hito', 'milestone'),
@@ -529,7 +678,7 @@ def plan_shift(item, start_at):
 def plan_task(values):
     name = value(values.get('name'))
     ot = plan_identifier(values.get('ot'))
-    activity = plan_identifier(values.get('activity'), 3)
+    activity = plan_identifier(values.get('activity'), 4)
     if not ot and name:
         match = re.search(r'\bOT\s*[:#-]?\s*(\d{4,})\b', name, re.IGNORECASE)
         ot = match.group(1) if match else ''
@@ -537,7 +686,7 @@ def plan_task(values):
         match = re.search(r'\b(?:OP|ACTIVIDAD)\s*[:#-]?\s*([A-Z0-9.-]+)\b',
                           name, re.IGNORECASE)
         activity = match.group(1) if match else ''
-    activity = plan_identifier(activity, 3)
+    activity = plan_identifier(activity, 4)
     if not name:
         return None
     duration = plan_number(values.get('duration'))
@@ -554,7 +703,8 @@ def plan_task(values):
             'finish_at': date_text(values.get('finish')),
             'baseline_start': date_text(values.get('baseline_start')),
             'baseline_finish': date_text(values.get('baseline_finish')),
-            'duration_hours': duration, 'weight': plan_number(values.get('weight')),
+            'duration_hours': duration, 'planned_hh': plan_number(values.get('planned_hh')),
+            'weight': plan_number(values.get('weight')),
             'critical': int(plan_boolean(values.get('critical'))),
             'milestone': int(plan_boolean(values.get('milestone'))),
             'predecessors': value(values.get('predecessors'))}
@@ -625,6 +775,7 @@ def parse_plan_xml(blob):
                           'ot': custom('ot'), 'activity': custom('activity'),
                           'area': custom('area'), 'shift': custom('shift'),
                           'journey': custom('journey'), 'weight': custom('weight'),
+                          'planned_hh': custom('planned_hh'),
                           'name': xml_child(node, 'Name'), 'start': xml_child(node, 'Start'),
                           'finish': xml_child(node, 'Finish'),
                           'baseline_start': xml_child(node.find('./{*}Baseline'), 'Start')
@@ -653,14 +804,15 @@ def save_plan(tasks, filename, source_format, user_id):
         version_id = cursor.lastrowid
         conn.executemany('''INSERT INTO plan_tasks
           (version_id,source_uid,wbs,ot,activity,name,area,shift,journey,start_at,finish_at,
-           baseline_start,baseline_finish,duration_hours,weight,critical,milestone,predecessors)
+           baseline_start,baseline_finish,duration_hours,planned_hh,weight,critical,milestone,predecessors)
           VALUES (:version_id,:source_uid,:wbs,:ot,:activity,:name,:area,:shift,:journey,:start_at,:finish_at,
-                  :baseline_start,:baseline_finish,:duration_hours,:weight,:critical,:milestone,:predecessors)''',
+                  :baseline_start,:baseline_finish,:duration_hours,:planned_hh,:weight,:critical,:milestone,:predecessors)''',
                          ({**task, 'version_id': version_id} for task in tasks))
     return version_id
 
 
-def plan_payload():
+def plan_payload(filters=None):
+    filters = filters or {}
     with database() as conn:
         version = conn.execute('''SELECT plan_versions.*,users.username AS imported_by_name
           FROM plan_versions JOIN users ON users.id=plan_versions.imported_by
@@ -668,24 +820,53 @@ def plan_payload():
         if not version:
             return {'version': None, 'tasks': [], 'history': [], 'counts': {'tasks': 0, 'matched': 0,
                     'unmatched': 0, 'missing_ids': 0, 'critical': 0}}
-        tasks = [dict(row) for row in conn.execute('''SELECT plan_tasks.*,
-          reports.id AS report_id,reports.progress AS actual_progress,
-          reports.submitted_at AS last_report_at
-          FROM plan_tasks LEFT JOIN reports ON reports.id=(SELECT id FROM reports r
-            WHERE r.ot=plan_tasks.ot AND r.activity=plan_tasks.activity
-            ORDER BY r.submitted_at DESC,r.id DESC LIMIT 1)
-          WHERE plan_tasks.version_id=? ORDER BY plan_tasks.wbs,plan_tasks.id''',
+        tasks = [dict(row) for row in conn.execute('''SELECT plan_tasks.*
+          FROM plan_tasks WHERE plan_tasks.version_id=?
+          ORDER BY plan_tasks.wbs,plan_tasks.id''',
                                                    (version['id'],))]
         for task in tasks:
             task['shift'] = plan_shift(task.get('shift'), task.get('start_at'))
-        history = [dict(row) for row in conn.execute('''SELECT r.ot,r.activity,r.progress,
-          r.submitted_at,r.report_date
+        history = [dict(row) for row in conn.execute('''SELECT r.id,r.ot,r.activity,r.progress,
+          r.start_at,r.submitted_at,r.report_date,r.workers,r.hours,r.area,r.shift,r.comment,r.flags
           FROM reports r WHERE EXISTS (SELECT 1 FROM plan_tasks p
             WHERE p.version_id=? AND p.ot=r.ot AND p.activity=r.activity)
           ORDER BY r.submitted_at,r.id''', (version['id'],))]
+    analysis_tasks = [task for task in tasks
+                      if (not filters.get('area') or task.get('area') == filters['area'])
+                      and (not filters.get('ot') or task.get('ot') == filters['ot'])
+                      and (not filters.get('op') or task.get('activity') == filters['op'])
+                      and (not filters.get('shift') or task.get('shift') == filters['shift'])]
+    cutoff = progress_moment(filters.get('cutoff'), end_of_day=True) if filters.get('cutoff') else None
+    analytics = summarize(analysis_tasks, history, cutoff)
+    operation_map = {(item['ot'], item['op']): item for item in analytics['operations']}
+    for task in tasks:
+        operation = operation_map.get((task['ot'], task['activity']))
+        reports = operation['reports'] if operation else []
+        task['report_id'] = reports[-1]['id'] if reports else None
+        task['actual_progress'] = operation['actual'] if operation else None
+        task['planned_progress'] = operation['planned'] if operation else None
+        task['progress_variance'] = (operation['actual'] - operation['planned']) if operation else None
+        task['raw_actual_progress'] = operation['raw_actual'] if operation else None
+        task['report_count'] = operation['report_count'] if operation else 0
+        task['last_report_at'] = reports[-1]['submitted_at'] if reports else None
+    finish = max((task['finish_at'] for task in analysis_tasks if task.get('finish_at')), default=None)
+    curve = progress_curve(analysis_tasks, history, cutoff)
+    forecast = projections(curve, finish)
+    executive = {key: value for key, value in analytics.items() if key != 'operations'}
+    executive['operations'] = [{key: value for key, value in operation.items() if key != 'reports'}
+                               for operation in analytics['operations']]
+    executive['curve'] = curve
+    executive['projection'] = forecast
+    executive['planned_finish'] = finish
+    executive['reference_bhp'] = {
+        'cutoff': '2026-11-06T08:00:00-03:00', 'planned': 66.90, 'actual': 52.31,
+        'variance': -14.59, 'maximum_attainable': 66.72,
+        'activities': 3449, 'planned_hh': 46524.5,
+    }
     matched = sum(task['report_id'] is not None for task in tasks)
     missing_ids = sum(not task['ot'] or not task['activity'] for task in tasks)
     return {'version': dict(version), 'tasks': tasks, 'history': history,
+            'analytics': executive,
             'counts': {'tasks': len(tasks), 'matched': matched,
                        'unmatched': len(tasks) - matched,
                        'missing_ids': missing_ids,
@@ -695,18 +876,39 @@ def plan_payload():
 def payload():
     with database() as conn:
         records = [dict(r) for r in conn.execute('SELECT * FROM reports ORDER BY submitted_at DESC, id DESC')]
-        last = conn.execute('''SELECT at,records,source,errors,pending,discrepancies
+        active_version = conn.execute('''SELECT id FROM plan_versions WHERE active=1
+          ORDER BY id DESC LIMIT 1''').fetchone()
+        active_tasks = ([dict(row) for row in conn.execute(
+            'SELECT * FROM plan_tasks WHERE version_id=?', (active_version['id'],))]
+                        if active_version else [])
+        last = conn.execute('''SELECT at,records,source,errors,pending,discrepancies,conflicts
           FROM sync_log ORDER BY id DESC LIMIT 1''').fetchone()
         pending_count = conn.execute('SELECT count(*) FROM pending_reports').fetchone()[0]
+    synthetic_tasks = []
+    seen_operations = set()
+    for record in records:
+        key = (record['ot'], record['activity'])
+        if all(key) and key not in seen_operations:
+            seen_operations.add(key)
+            synthetic_tasks.append({'ot': key[0], 'activity': key[1], 'name': '',
+                                    'area': record['area'], 'shift': record['shift']})
+    consolidated = summarize(active_tasks or synthetic_tasks, records)
+    ot_progress = {item['ot']: item for item in consolidated['work_orders']}
     ot_latest = {}
     for r in records:
         ot_latest.setdefault(r['ot'], r)
         r['photos'] = json.loads(r['photos'])
         r['flags'] = json.loads(r['flags'])
+    for ot, latest in ot_latest.items():
+        if ot in ot_progress:
+            latest['progress'] = ot_progress[ot]['progress']
+            latest['progress_method'] = ot_progress[ot]['method']
+            latest['operation_count'] = ot_progress[ot]['operations']
     areas = Counter(r['area'] for r in records)
     return {'reports': records, 'ots': list(ot_latest.values()), 'areas': areas,
             'last_sync': dict(last) if last else None,
             'counts': {'reports': len(records), 'ots': len(ot_latest),
+                       'progress': consolidated['actual'],
                        'flagged': sum(bool(r['flags']) for r in ot_latest.values()),
                        'pending': pending_count}}
 
@@ -948,7 +1150,8 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        request_url = urlparse(self.path)
+        path = request_url.path
         if path == '/login':
             if self.current_user():
                 return self.redirect('/')
@@ -971,6 +1174,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, json.dumps(self.users_payload(), ensure_ascii=False))
         if path == '/api/plan':
             return self.send(200, json.dumps(plan_payload(), ensure_ascii=False))
+        if path == '/api/plan/analytics':
+            query = parse_qs(request_url.query)
+            filters = {name: value(query.get(name, [''])[0])
+                       for name in ('area', 'ot', 'op', 'shift', 'cutoff')}
+            result = plan_payload(filters)
+            return self.send(200, json.dumps({'analytics': result.get('analytics')},
+                                             ensure_ascii=False))
         if path == '/plan':
             return self.send(200, (ROOT / 'plan.html').read_bytes(), 'text/html')
         if path == '/plan.js':
@@ -1056,10 +1266,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(413, json.dumps({'error': 'Solicitud vacía o demasiado grande'}))
             raw = self.rfile.read(length)
             data = json.loads(raw.decode('utf-8'))
-            imported, pending, discrepancies, errors = sync_forms(data)
+            imported, pending, discrepancies, conflicts, duplicates, errors = sync_forms(data)
             status = 422 if errors else 200
             result = ('rejected' if errors else
-                      'success_with_review' if discrepancies else
+                      'success_with_review' if discrepancies or conflicts else
                       'success_with_pending' if pending else 'success')
             self.send(status, json.dumps({'status': result, 'atomic': True,
                                           'processed': len(data['body']['value']),
@@ -1067,6 +1277,8 @@ class Handler(BaseHTTPRequestHandler):
                                           'upserted': imported,
                                           'pending': pending,
                                           'discrepancies': discrepancies,
+                                          'conflicts': conflicts,
+                                          'duplicates_ignored': duplicates,
                                           'rejected': len(data['body']['value']) if errors else 0,
                                           'errors': errors[:20]},
                                          ensure_ascii=False))

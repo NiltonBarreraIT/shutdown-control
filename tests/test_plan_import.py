@@ -29,7 +29,7 @@ class PlanImportTest(unittest.TestCase):
         output = io.BytesIO()
         workbook.save(output)
         tasks = app.parse_plan_xlsx(output.getvalue())
-        self.assertEqual(('419433450', '020', 'Cambio de componente'),
+        self.assertEqual(('419433450', '0020', 'Cambio de componente'),
                          (tasks[0]['ot'], tasks[0]['activity'], tasks[0]['name']))
         self.assertEqual('Día', tasks[0]['shift'])
         with app.database() as conn:
@@ -39,12 +39,12 @@ class PlanImportTest(unittest.TestCase):
             conn.execute('''INSERT INTO reports
               (id,submitted_at,ot,activity,progress,photos,flags)
               VALUES (?,?,?,?,?,?,?)''', ('HISTORY-1', '2026-11-05 10:00:00',
-                                         '419433450', '020', 40, '[]', '[]'))
+                                         '419433450', '0020', 40, '[]', '[]'))
         result = app.plan_payload()
         self.assertEqual((version_id, 1, 1, 0),
                          (result['version']['id'], result['counts']['tasks'],
                           result['counts']['matched'], result['counts']['unmatched']))
-        self.assertEqual(('419433450', '020', 40.0),
+        self.assertEqual(('419433450', '0020', 40.0),
                          (result['history'][0]['ot'], result['history'][0]['activity'],
                           result['history'][0]['progress']))
 
@@ -72,6 +72,7 @@ class PlanImportTest(unittest.TestCase):
         self.assertEqual(('Tramo T1', '0020', 'Flotación'),
                          (tasks[0]['name'], tasks[0]['activity'], tasks[0]['area']))
         self.assertEqual(('Día', '03-11 Día'), (tasks[0]['shift'], tasks[0]['journey']))
+        self.assertEqual(3.0, tasks[0]['planned_hh'])
         with app.database() as conn:
             user_id = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
         app.save_plan(tasks, 'real.xlsx', 'xlsx', user_id)
@@ -95,7 +96,7 @@ class PlanImportTest(unittest.TestCase):
           </Tasks>
         </Project>'''
         tasks = app.parse_plan_xml(xml)
-        self.assertEqual([('419433450', '020'), ('419433451', '030')],
+        self.assertEqual([('419433450', '0020'), ('419433451', '0030')],
                          [(task['ot'], task['activity']) for task in tasks])
 
     def test_rejects_duplicate_ot_activity(self):
@@ -112,6 +113,25 @@ class PlanImportTest(unittest.TestCase):
                                   'shift': 'Noche'})
         self.assertEqual(('Noche', 'Día', 'Noche'),
                          (night['shift'], day['shift'], explicit['shift']))
+
+    def test_plan_payload_uses_incremental_backend_progress(self):
+        task = app.plan_task({'ot': '100', 'activity': '0010', 'name': 'Operación',
+                              'start': '2026-11-05 08:00', 'finish': '2026-11-05 18:00',
+                              'planned_hh': 10})
+        with app.database() as conn:
+            user_id = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
+        app.save_plan([task], 'incremental.xlsx', 'xlsx', user_id)
+        with app.database() as conn:
+            conn.executemany('''INSERT INTO reports
+              (id,submitted_at,ot,activity,progress,workers,hours,photos,flags)
+              VALUES (?,?,?,?,?,?,?,?,?)''',
+                             [('INC-1', '2026-11-05 09:00', '100', '0010', 20, 2, 3, '[]', '[]'),
+                              ('INC-2', '2026-11-05 10:00', '100', '0010', 80, 2, 3, '[]', '[]')])
+        result = app.plan_payload()
+        self.assertEqual((100, 100, 2),
+                         (result['analytics']['actual'],
+                          result['tasks'][0]['raw_actual_progress'],
+                          result['tasks'][0]['report_count']))
 
 
 if __name__ == '__main__':

@@ -226,18 +226,26 @@ class SyncApiTest(unittest.TestCase):
             log = conn.execute('SELECT records,errors FROM sync_log').fetchone()
             self.assertEqual((0, 1), tuple(log))
 
-    def test_rejects_entire_batch_when_one_row_is_invalid(self):
+    def test_imports_valid_rows_when_one_row_is_invalid(self):
         invalid = row('102')
         invalid['¿Cuál es tu área de trabajo?'] = 'Otra'
         status, result = self.request({'body': {'value': [row(), invalid]}})
-        self.assertEqual(422, status)
-        self.assertEqual(('rejected', True, 2, 0, 2, 1),
+        self.assertEqual(200, status)
+        self.assertEqual(('success_with_errors', False, 2, 1, 1, 1),
                          (result['status'], result['atomic'], result['processed'],
                           result['upserted'], result['rejected'], len(result['errors'])))
         with app.database() as conn:
-            self.assertEqual(0, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
+            self.assertEqual(1, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
             log = conn.execute('SELECT records,errors FROM sync_log').fetchone()
-            self.assertEqual((0, 1), tuple(log))
+            self.assertEqual((1, 1), tuple(log))
+
+    def test_rejects_batch_when_every_row_is_invalid(self):
+        invalid = row('INVALID-ONLY')
+        invalid['¿Cuál es tu área de trabajo?'] = 'Otra'
+        status, result = self.request({'body': {'value': [invalid]}})
+        self.assertEqual((422, 'rejected', False, 0, 1),
+                         (status, result['status'], result['atomic'],
+                          result['imported'], result['rejected']))
 
     def test_ignores_identical_duplicate_forms_id_inside_one_batch(self):
         status, result = self.request({'body': {'value': [row('DUP-1'), row('DUP-1')]}})

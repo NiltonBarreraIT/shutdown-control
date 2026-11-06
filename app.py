@@ -543,51 +543,52 @@ def sync_forms(data):
                 pending.append((exc.record_id, exc.area))
         except ValueError as exc:
             errors.append({'index': position, 'error': str(exc)})
-    # Missing OT is an explicit pending state. Structural errors still reject the whole batch.
-    committed = 0 if errors else len(reports)
-    pending_count = 0 if errors else len(pending)
+    # Missing OT is an explicit pending state. Invalid source rows are isolated so
+    # one stale/deleted Excel table row does not discard the valid batch.
+    committed = len(reports)
+    pending_count = len(pending)
     now = dt.datetime.now(dt.timezone.utc).isoformat()
     pending_audit = []
     discrepancy_audit = []
     conflict_audit = []
     identical_count = 0
     with database() as conn:
-        if not errors:
-            if reports:
-                reports, discrepancy_audit = preserve_registered_ots(
-                    conn, reports, 'Power Automate', now)
-                reports, membership_audit = flag_unplanned_operations(conn, reports)
-                reports, conflict_audit, identical_count = audit_report_conflicts(
-                    conn, reports, now)
-                conflict_audit.extend(membership_audit)
-                committed = len(reports)
-                conn.executemany(UPSERT_REPORT, reports)
-                conn.executemany('DELETE FROM pending_reports WHERE id=?',
-                                 ((report[0],) for report in reports))
-            if pending:
-                pending_rows = []
-                for record_id, area in pending:
-                    existing = conn.execute(
-                        'SELECT flags FROM reports WHERE id=?', (record_id,)).fetchone()
-                    reason = 'OT pendiente'
-                    if existing:
-                        reason = 'OT eliminada en origen; conserva reporte anterior para revisión'
-                        try:
-                            flags = json.loads(existing['flags'] or '[]')
-                        except (TypeError, json.JSONDecodeError):
-                            flags = []
-                        review_flag = 'OT eliminada en origen: revisar'
-                        if review_flag not in flags:
-                            flags.append(review_flag)
-                        conn.execute('UPDATE reports SET flags=? WHERE id=?',
-                                     (json.dumps(flags), record_id))
-                    pending_rows.append((record_id, area, reason, now, now))
-                    pending_audit.append({'id': record_id, 'reason': reason})
-                conn.executemany('''INSERT INTO pending_reports
-                  (id,area,reason,first_seen_at,updated_at) VALUES (?,?,?,?,?)
-                  ON CONFLICT(id) DO UPDATE SET area=excluded.area,
-                  reason=excluded.reason, updated_at=excluded.updated_at''',
-                                 pending_rows)
+        if reports:
+            reports, discrepancy_audit = preserve_registered_ots(
+                conn, reports, 'Power Automate', now)
+            reports, membership_audit = flag_unplanned_operations(conn, reports)
+            reports, conflict_audit, identical_count = audit_report_conflicts(
+                conn, reports, now)
+            conflict_audit.extend(membership_audit)
+            committed = len(reports)
+            conn.executemany(UPSERT_REPORT, reports)
+            conn.executemany('DELETE FROM pending_reports WHERE id=?',
+                             ((report[0],) for report in reports))
+        if pending:
+            pending_rows = []
+            for record_id, area in pending:
+                existing = conn.execute(
+                    'SELECT flags FROM reports WHERE id=?', (record_id,)).fetchone()
+                reason = 'OT pendiente'
+                if existing:
+                    reason = 'OT eliminada en origen; conserva reporte anterior para revisión'
+                    try:
+                        flags = json.loads(existing['flags'] or '[]')
+                    except (TypeError, json.JSONDecodeError):
+                        flags = []
+                    review_flag = 'OT eliminada en origen: revisar'
+                    if review_flag not in flags:
+                        flags.append(review_flag)
+                    conn.execute('UPDATE reports SET flags=? WHERE id=?',
+                                 (json.dumps(flags), record_id))
+                pending_rows.append((record_id, area, reason, now, now))
+                pending_audit.append({'id': record_id, 'reason': reason})
+            conn.executemany('''INSERT INTO pending_reports
+              (id,area,reason,first_seen_at,updated_at) VALUES (?,?,?,?,?)
+              ON CONFLICT(id) DO UPDATE SET area=excluded.area,
+              reason=excluded.reason, updated_at=excluded.updated_at''',
+                             pending_rows)
+        if reports or pending:
             refresh_progress_anomalies(conn, now)
         review_detail = pending_audit + discrepancy_audit + conflict_audit
         detail = errors[:20] if errors else review_detail[:20] if review_detail else None
@@ -1268,11 +1269,13 @@ class Handler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             data = json.loads(raw.decode('utf-8'))
             imported, pending, discrepancies, conflicts, duplicates, errors = sync_forms(data)
-            status = 422 if errors else 200
-            result = ('rejected' if errors else
+            accepted = imported + pending
+            status = 422 if errors and not accepted else 200
+            result = ('rejected' if errors and not accepted else
+                      'success_with_errors' if errors else
                       'success_with_review' if discrepancies or conflicts else
                       'success_with_pending' if pending else 'success')
-            self.send(status, json.dumps({'status': result, 'atomic': True,
+            self.send(status, json.dumps({'status': result, 'atomic': not errors,
                                           'processed': len(data['body']['value']),
                                           'imported': imported,
                                           'upserted': imported,
@@ -1280,7 +1283,7 @@ class Handler(BaseHTTPRequestHandler):
                                           'discrepancies': discrepancies,
                                           'conflicts': conflicts,
                                           'duplicates_ignored': duplicates,
-                                          'rejected': len(data['body']['value']) if errors else 0,
+                                          'rejected': len(errors),
                                           'errors': errors[:20]},
                                          ensure_ascii=False))
         except (UnicodeDecodeError, json.JSONDecodeError):

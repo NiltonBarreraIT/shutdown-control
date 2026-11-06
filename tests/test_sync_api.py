@@ -381,6 +381,26 @@ class SyncApiTest(unittest.TestCase):
                           result['pending'], result['duplicates_ignored'],
                           result['errors']))
 
+    def test_ignores_completely_blank_excel_table_row(self):
+        blank = {key: None for key in row('UNUSED')}
+        status, result = self.request({'body': {'value': [
+            row('VALID-BEFORE-BLANK'), blank, row('VALID-AFTER-BLANK')]}})
+        self.assertEqual((200, 'success', 2, 1, 0, []),
+                         (status, result['status'], result['imported'],
+                          result['blank_rows_ignored'], result['rejected'],
+                          result['errors']))
+        with app.database() as conn:
+            self.assertEqual(2, conn.execute('SELECT count(*) FROM reports').fetchone()[0])
+
+    def test_row_with_data_but_without_id_remains_a_real_error(self):
+        incomplete = row('')
+        status, result = self.request({'body': {'value': [
+            row('VALID-WITH-INCOMPLETE'), incomplete]}})
+        self.assertEqual((200, 'success_with_errors', 1, 0, 1),
+                         (status, result['status'], result['imported'],
+                          result['blank_rows_ignored'], result['rejected']))
+        self.assertIn('Id válido', result['errors'][0]['error'])
+
     def test_progress_over_100_is_audited_by_operation(self):
         first = set_ot(row('OVER-1', progress='70'), '450099')
         second = set_ot(row('OVER-2', progress='50'), '450099')

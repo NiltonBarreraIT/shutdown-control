@@ -367,6 +367,11 @@ def normalize_json_record(record):
             dt.datetime.now(dt.timezone.utc).isoformat())
 
 
+def blank_json_record(record):
+    return (isinstance(record, dict) and
+            all(value(item) == '' for item in record.values()))
+
+
 UPSERT_REPORT = '''INSERT INTO reports VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   ON CONFLICT(id) DO UPDATE SET
   start_at=excluded.start_at, submitted_at=excluded.submitted_at,
@@ -522,7 +527,11 @@ def sync_forms(data):
         raise ValueError(f'body.value supera el máximo de {MAX_SYNC_RECORDS} registros')
     reports, pending, errors, seen_ids = [], [], [], set()
     batch_duplicates = 0
+    blank_rows = 0
     for position, row in enumerate(rows, 1):
+        if blank_json_record(row):
+            blank_rows += 1
+            continue
         try:
             report = normalize_json_record(row)
             record_id = report[0]
@@ -599,7 +608,7 @@ def sync_forms(data):
                       json.dumps(detail, ensure_ascii=False) if detail else None,
                       pending_count, len(discrepancy_audit), len(conflict_audit)))
     return (committed, pending_count, len(discrepancy_audit), len(conflict_audit),
-            identical_count + batch_duplicates, errors)
+            identical_count + batch_duplicates, blank_rows, errors)
 
 
 def import_xlsx(blob, source='Carga manual'):
@@ -1268,7 +1277,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(413, json.dumps({'error': 'Solicitud vacía o demasiado grande'}))
             raw = self.rfile.read(length)
             data = json.loads(raw.decode('utf-8'))
-            imported, pending, discrepancies, conflicts, duplicates, errors = sync_forms(data)
+            (imported, pending, discrepancies, conflicts, duplicates,
+             blank_rows, errors) = sync_forms(data)
             accepted = imported + pending
             status = 422 if errors and not accepted else 200
             result = ('rejected' if errors and not accepted else
@@ -1283,6 +1293,7 @@ class Handler(BaseHTTPRequestHandler):
                                           'discrepancies': discrepancies,
                                           'conflicts': conflicts,
                                           'duplicates_ignored': duplicates,
+                                          'blank_rows_ignored': blank_rows,
                                           'rejected': len(errors),
                                           'errors': errors[:20]},
                                          ensure_ascii=False))

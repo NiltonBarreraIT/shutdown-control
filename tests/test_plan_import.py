@@ -31,13 +31,22 @@ class PlanImportTest(unittest.TestCase):
         tasks = app.parse_plan_xlsx(output.getvalue())
         self.assertEqual(('419433450', '020', 'Cambio de componente'),
                          (tasks[0]['ot'], tasks[0]['activity'], tasks[0]['name']))
+        self.assertEqual('Día', tasks[0]['shift'])
         with app.database() as conn:
             user_id = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
         version_id = app.save_plan(tasks, 'gantt.xlsx', 'xlsx', user_id)
+        with app.database() as conn:
+            conn.execute('''INSERT INTO reports
+              (id,submitted_at,ot,activity,progress,photos,flags)
+              VALUES (?,?,?,?,?,?,?)''', ('HISTORY-1', '2026-11-05 10:00:00',
+                                         '419433450', '020', 40, '[]', '[]'))
         result = app.plan_payload()
-        self.assertEqual((version_id, 1, 0, 1),
+        self.assertEqual((version_id, 1, 1, 0),
                          (result['version']['id'], result['counts']['tasks'],
                           result['counts']['matched'], result['counts']['unmatched']))
+        self.assertEqual(('419433450', '020', 40.0),
+                         (result['history'][0]['ot'], result['history'][0]['activity'],
+                          result['history'][0]['progress']))
 
     def test_detects_real_export_header_after_summary_and_allows_segments(self):
         workbook = Workbook()
@@ -95,6 +104,14 @@ class PlanImportTest(unittest.TestCase):
             user_id = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()[0]
         with self.assertRaisesRegex(ValueError, 'duplicadas'):
             app.save_plan([task, dict(task)], 'duplicado.xlsx', 'xlsx', user_id)
+
+    def test_infers_shift_for_legacy_tasks_without_turno(self):
+        night = app.plan_task({'name': 'Tarea noche', 'start': '2026-11-03 04:00'})
+        day = app.plan_task({'name': 'Tarea día', 'start': '2026-11-03 13:00'})
+        explicit = app.plan_task({'name': 'Excepción', 'start': '2026-11-03 13:00',
+                                  'shift': 'Noche'})
+        self.assertEqual(('Noche', 'Día', 'Noche'),
+                         (night['shift'], day['shift'], explicit['shift']))
 
 
 if __name__ == '__main__':

@@ -68,6 +68,16 @@ class DeploymentConfigurationTest(unittest.TestCase):
             self.assertIn(calculation, script)
         self.assertIn('Estimación lineal ponderada por duración', page)
 
+    def test_plan_phase_three_exposes_executive_curve(self):
+        page = (ROOT / 'plan.html').read_text(encoding='utf-8')
+        script = (ROOT / 'plan.js').read_text(encoding='utf-8')
+        for element_id in ('plan-curve', 'plan-spi', 'plan-risk-area',
+                           'plan-lookahead', 'plan-area-table'):
+            self.assertIn(f'id="{element_id}"', page)
+        self.assertIn('curveSeries', script)
+        self.assertIn('actualAt', script)
+        self.assertIn('Curva S y control ejecutivo', page)
+
 
 class MigrationSafetyTest(unittest.TestCase):
     def setUp(self):

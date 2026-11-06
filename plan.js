@@ -37,6 +37,17 @@ function programMetrics(tasks,now){
   if(start&&finish&&actual>0&&now>start)forecast=new Date(start.getTime()+(now-start)/(actual/100));
   return{planned,actual,variance,totalWeight,start,finish,forecast};
 }
+const reportMoment=report=>planDate(report.submitted_at)||planDate(report.report_date);
+function historyIndex(history){const index=new Map();(history||[]).forEach(report=>{const key=`${report.ot}\u0000${report.activity}`;if(!index.has(key))index.set(key,[]);index.get(key).push(report)});return index}
+function actualAt(task,cutoff,index){const reports=index.get(`${task.ot}\u0000${task.activity}`)||[];let progress=0;for(const report of reports){const moment=reportMoment(report);if(moment&&moment<=cutoff)progress=clamp(report.progress)}return progress}
+function curveSeries(tasks,history,now){
+  const scheduled=tasks.filter(task=>plannedProgress(task,now)!==null),metrics=programMetrics(scheduled,now);
+  if(!metrics.start||!metrics.finish)return[];
+  const index=historyIndex(history),end=new Date(Math.min(now,metrics.finish)),days=Math.max(1,Math.ceil((end-metrics.start)/86400000)),step=Math.max(1,Math.ceil(days/60)),points=[];
+  for(let day=0;day<=days;day+=step){const cutoff=new Date(metrics.start);cutoff.setDate(cutoff.getDate()+day);cutoff.setHours(23,59,59,999);if(cutoff>end)cutoff.setTime(end.getTime());const total=scheduled.reduce((sum,task)=>sum+taskWeight(task),0);const planned=total?scheduled.reduce((sum,task)=>sum+(plannedProgress(task,cutoff)||0)*taskWeight(task),0)/total:0;const actual=total?scheduled.reduce((sum,task)=>sum+actualAt(task,cutoff,index)*taskWeight(task),0)/total:0;points.push({at:new Date(cutoff),planned,actual});if(cutoff>=end)break}
+  if(points.length&&points[points.length-1].at<end){const total=scheduled.reduce((sum,task)=>sum+taskWeight(task),0);points.push({at:end,planned:total?scheduled.reduce((sum,task)=>sum+(plannedProgress(task,end)||0)*taskWeight(task),0)/total:0,actual:total?scheduled.reduce((sum,task)=>sum+actualAt(task,end,index)*taskWeight(task),0)/total:0})}
+  return points;
+}
 async function api(path,options={}){const response=await fetch(path,options);if(response.status===401){location.href='/login';throw Error('Sesión expirada')}const data=await response.json();if(!response.ok)throw Error(data.error||'No fue posible completar la operación');return data}
 function fillSelect(id,values,fallback){$(id).innerHTML=`<option value="">${fallback}</option>${values.map(value=>`<option value="${escapeHTML(value)}">${escapeHTML(value)}</option>`).join('')}`}
 function renderPhaseTwo(tasks,now){
@@ -57,6 +68,24 @@ function renderPhaseTwo(tasks,now){
     $('plan-forecast-detail').textContent='Se requiere avance real mayor a 0%';
   }
 }
+function renderPhaseThree(tasks,now){
+  const metrics=programMetrics(tasks,now),spi=metrics.planned>0?metrics.actual/metrics.planned:null;
+  $('plan-spi').textContent=spi===null?'—':spi.toFixed(2);
+  const areas=[...new Set(tasks.map(task=>task.area||'Sin área'))].map(area=>{const areaTasks=tasks.filter(task=>(task.area||'Sin área')===area);return{area,...programMetrics(areaTasks,now)}}).sort((a,b)=>a.variance-b.variance);
+  const risk=areas[0];
+  $('plan-risk-area').textContent=risk?risk.area:'—';
+  $('plan-risk-detail').textContent=risk?`${risk.variance>=0?'+':''}${risk.variance.toFixed(1)} pp`:'Por área';
+  $('plan-lookahead').textContent=tasks.filter(task=>isUpcoming(task,now)).length;
+  $('plan-area-table').innerHTML=areas.map(area=>{const cls=area.planned===0?'neutral':area.variance>=-5?'success':area.variance>=-15?'warn':'danger';const label=cls==='success'?'En línea':cls==='warn'?'Atención':cls==='danger'?'Crítica':'Sin inicio';return`<tr><td><strong>${escapeHTML(area.area)}</strong></td><td>${area.planned.toFixed(1)}%</td><td>${area.actual.toFixed(1)}%</td><td>${area.variance>=0?'+':''}${area.variance.toFixed(1)} pp</td><td><span class="status ${cls}">${label}</span></td></tr>`}).join('')||'<tr><td colspan="5" class="empty">No hay áreas para comparar.</td></tr>';
+  const series=curveSeries(tasks,plan.history||[],now),svg=$('plan-curve');
+  if(!series.length){svg.innerHTML='<text x="380" y="130" text-anchor="middle" class="curve-empty">No hay fechas para construir la curva</text>';$('curve-cutoff').textContent='Sin historial';return}
+  const left=48,right=742,top=18,bottom=222,width=right-left,height=bottom-top,x=i=>left+(series.length===1?0:i/(series.length-1))*width,y=value=>bottom-clamp(value)/100*height;
+  const planned=series.map((point,index)=>`${x(index).toFixed(1)},${y(point.planned).toFixed(1)}`).join(' '),actual=series.map((point,index)=>`${x(index).toFixed(1)},${y(point.actual).toFixed(1)}`).join(' ');
+  const grid=[0,25,50,75,100].map(value=>`<line x1="${left}" y1="${y(value)}" x2="${right}" y2="${y(value)}" class="curve-grid"/><text x="40" y="${y(value)+4}" text-anchor="end" class="curve-axis">${value}%</text>`).join('');
+  const chartDate=date=>date.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'});
+  svg.innerHTML=`${grid}<polyline points="${planned}" class="curve-line curve-plan"/><polyline points="${actual}" class="curve-line curve-real"/><text x="${left}" y="246" class="curve-axis">${chartDate(series[0].at)}</text><text x="${right}" y="246" text-anchor="end" class="curve-axis">${chartDate(series[series.length-1].at)}</text>`;
+  $('curve-cutoff').textContent=`${plan.history?.length||0} reportes históricos`;
+}
 function render(){
   const now=new Date(),tasks=plan.tasks||[];
   $('plan-overdue').textContent=tasks.filter(task=>isOverdue(task,now)).length;
@@ -68,6 +97,7 @@ function render(){
   fillSelect('plan-area',[...new Set(tasks.map(task=>task.area).filter(Boolean))].sort(),'Todas las áreas');
   fillSelect('plan-shift',[...new Set(tasks.map(task=>task.shift).filter(Boolean))].sort(),'Todos los turnos');
   renderPhaseTwo(tasks,now);
+  renderPhaseThree(tasks,now);
   filter();
 }
 function filter(){
@@ -87,7 +117,7 @@ function filter(){
   }).join('')||'<tr><td colspan="6" class="empty">No hay tareas que coincidan.</td></tr>';
 }
 async function load(){try{const status=await api('/api/status');$('account-name').textContent=`${status.current_user.username} · ${status.current_user.role_label}`;$('users-nav').classList.toggle('hidden',status.current_user.role!=='admin');$('plan-import').classList.toggle('hidden',!['admin','planner'].includes(status.current_user.role));plan=await api('/api/plan');render()}catch(error){toast(error.message,true)}}
-if(typeof module!=='undefined')module.exports={planDate,plannedProgress,actualProgress,taskWeight,comparisonState,programMetrics};
+if(typeof module!=='undefined')module.exports={planDate,plannedProgress,actualProgress,taskWeight,comparisonState,programMetrics,historyIndex,actualAt,curveSeries};
 if(typeof document!=='undefined'){
   ['plan-search','plan-area','plan-shift','plan-state','plan-date'].forEach(id=>$(id).addEventListener(id==='plan-search'?'input':'change',filter));
   $('plan-upload').addEventListener('click',async()=>{const file=$('plan-file').files[0];if(!file){toast('Seleccione un archivo Excel o XML',true);return}const type=file.name.toLowerCase().endsWith('.xml')?'application/xml':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';try{const result=await api('/api/plan/import',{method:'POST',headers:{'Content-Type':type,'X-Filename':file.name},body:file});toast(`${result.imported} tareas importadas`);plan=await api('/api/plan');render()}catch(error){toast(error.message,true)}});

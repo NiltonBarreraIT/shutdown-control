@@ -515,6 +515,17 @@ def plan_identifier(item, minimum_digits=0):
     return text.zfill(minimum_digits) if text.isdigit() else text
 
 
+def plan_shift(item, start_at):
+    explicit = value(item)
+    if explicit:
+        return explicit
+    match = re.search(r'[T ](\d{2}):\d{2}', value(start_at))
+    if not match:
+        return ''
+    hour = int(match.group(1))
+    return 'Día' if 8 <= hour < 20 else 'Noche'
+
+
 def plan_task(values):
     name = value(values.get('name'))
     ot = plan_identifier(values.get('ot'))
@@ -534,11 +545,12 @@ def plan_task(values):
     area_lookup = {normalized_key(area): area for area in AREA_COLUMNS}
     area_lookup['flotacin'] = 'Flotación'
     area = area_lookup.get(normalized_key(area_raw), area_raw)
+    start_at = date_text(values.get('start'))
     return {'source_uid': value(values.get('uid')), 'wbs': value(values.get('wbs')),
             'ot': ot, 'activity': activity, 'name': name,
-            'area': area, 'shift': value(values.get('shift')),
+            'area': area, 'shift': plan_shift(values.get('shift'), start_at),
             'journey': value(values.get('journey')),
-            'start_at': date_text(values.get('start')),
+            'start_at': start_at,
             'finish_at': date_text(values.get('finish')),
             'baseline_start': date_text(values.get('baseline_start')),
             'baseline_finish': date_text(values.get('baseline_finish')),
@@ -654,7 +666,7 @@ def plan_payload():
           FROM plan_versions JOIN users ON users.id=plan_versions.imported_by
           WHERE plan_versions.active=1 ORDER BY plan_versions.id DESC LIMIT 1''').fetchone()
         if not version:
-            return {'version': None, 'tasks': [], 'counts': {'tasks': 0, 'matched': 0,
+            return {'version': None, 'tasks': [], 'history': [], 'counts': {'tasks': 0, 'matched': 0,
                     'unmatched': 0, 'missing_ids': 0, 'critical': 0}}
         tasks = [dict(row) for row in conn.execute('''SELECT plan_tasks.*,
           reports.id AS report_id,reports.progress AS actual_progress,
@@ -664,9 +676,16 @@ def plan_payload():
             ORDER BY r.submitted_at DESC,r.id DESC LIMIT 1)
           WHERE plan_tasks.version_id=? ORDER BY plan_tasks.wbs,plan_tasks.id''',
                                                    (version['id'],))]
+        for task in tasks:
+            task['shift'] = plan_shift(task.get('shift'), task.get('start_at'))
+        history = [dict(row) for row in conn.execute('''SELECT r.ot,r.activity,r.progress,
+          r.submitted_at,r.report_date
+          FROM reports r WHERE EXISTS (SELECT 1 FROM plan_tasks p
+            WHERE p.version_id=? AND p.ot=r.ot AND p.activity=r.activity)
+          ORDER BY r.submitted_at,r.id''', (version['id'],))]
     matched = sum(task['report_id'] is not None for task in tasks)
     missing_ids = sum(not task['ot'] or not task['activity'] for task in tasks)
-    return {'version': dict(version), 'tasks': tasks,
+    return {'version': dict(version), 'tasks': tasks, 'history': history,
             'counts': {'tasks': len(tasks), 'matched': matched,
                        'unmatched': len(tasks) - matched,
                        'missing_ids': missing_ids,

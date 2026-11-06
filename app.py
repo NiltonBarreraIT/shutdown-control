@@ -88,7 +88,8 @@ def db_conn():
     conn.execute('''CREATE TABLE IF NOT EXISTS plan_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT, version_id INTEGER NOT NULL,
       source_uid TEXT, wbs TEXT, ot TEXT NOT NULL, activity TEXT NOT NULL,
-      name TEXT NOT NULL, area TEXT, start_at TEXT, finish_at TEXT,
+      name TEXT NOT NULL, area TEXT, shift TEXT, journey TEXT,
+      start_at TEXT, finish_at TEXT,
       baseline_start TEXT, baseline_finish TEXT, duration_hours REAL,
       weight REAL, critical INTEGER DEFAULT 0, milestone INTEGER DEFAULT 0,
       predecessors TEXT, UNIQUE(version_id,ot,activity,source_uid),
@@ -102,6 +103,11 @@ def db_conn():
         conn.execute('ALTER TABLE sync_log ADD COLUMN pending INTEGER DEFAULT 0')
     if 'discrepancies' not in columns:
         conn.execute('ALTER TABLE sync_log ADD COLUMN discrepancies INTEGER DEFAULT 0')
+    plan_columns = {row['name'] for row in conn.execute('PRAGMA table_info(plan_tasks)')}
+    if 'shift' not in plan_columns:
+        conn.execute('ALTER TABLE plan_tasks ADD COLUMN shift TEXT')
+    if 'journey' not in plan_columns:
+        conn.execute('ALTER TABLE plan_tasks ADD COLUMN journey TEXT')
     database_key = str(DB.resolve())
     if database_key not in BOOTSTRAPPED_DATABASES and USER and PASSWORD:
         bootstrap_user = conn.execute(
@@ -479,6 +485,8 @@ PLAN_ALIASES = {
     'activity': ('op', 'actividad', 'activity', 'operation'),
     'name': ('nombre', 'nombre de tarea', 'task name', 'tarea', 'actividad gantt'),
     'area': ('area',),
+    'shift': ('turno', 'shift'),
+    'journey': ('jornada', 'work period'),
     'start': ('comienzo', 'inicio', 'start'),
     'finish': ('fin', 'termino', 'finish'),
     'baseline_start': ('comienzo previsto', 'baseline start', 'inicio linea base'),
@@ -528,7 +536,9 @@ def plan_task(values):
     area = area_lookup.get(normalized_key(area_raw), area_raw)
     return {'source_uid': value(values.get('uid')), 'wbs': value(values.get('wbs')),
             'ot': ot, 'activity': activity, 'name': name,
-            'area': area, 'start_at': date_text(values.get('start')),
+            'area': area, 'shift': value(values.get('shift')),
+            'journey': value(values.get('journey')),
+            'start_at': date_text(values.get('start')),
             'finish_at': date_text(values.get('finish')),
             'baseline_start': date_text(values.get('baseline_start')),
             'baseline_finish': date_text(values.get('baseline_finish')),
@@ -601,7 +611,8 @@ def parse_plan_xml(blob):
                                 if xml_child(item, 'PredecessorUID'))
         task = plan_task({'uid': xml_child(node, 'UID'), 'wbs': xml_child(node, 'WBS'),
                           'ot': custom('ot'), 'activity': custom('activity'),
-                          'area': custom('area'), 'weight': custom('weight'),
+                          'area': custom('area'), 'shift': custom('shift'),
+                          'journey': custom('journey'), 'weight': custom('weight'),
                           'name': xml_child(node, 'Name'), 'start': xml_child(node, 'Start'),
                           'finish': xml_child(node, 'Finish'),
                           'baseline_start': xml_child(node.find('./{*}Baseline'), 'Start')
@@ -629,9 +640,9 @@ def save_plan(tasks, filename, source_format, user_id):
           VALUES (?,?,?,?,?,1)''', (filename[:255], source_format, utc_now(), user_id, len(tasks)))
         version_id = cursor.lastrowid
         conn.executemany('''INSERT INTO plan_tasks
-          (version_id,source_uid,wbs,ot,activity,name,area,start_at,finish_at,
+          (version_id,source_uid,wbs,ot,activity,name,area,shift,journey,start_at,finish_at,
            baseline_start,baseline_finish,duration_hours,weight,critical,milestone,predecessors)
-          VALUES (:version_id,:source_uid,:wbs,:ot,:activity,:name,:area,:start_at,:finish_at,
+          VALUES (:version_id,:source_uid,:wbs,:ot,:activity,:name,:area,:shift,:journey,:start_at,:finish_at,
                   :baseline_start,:baseline_finish,:duration_hours,:weight,:critical,:milestone,:predecessors)''',
                          ({**task, 'version_id': version_id} for task in tasks))
     return version_id

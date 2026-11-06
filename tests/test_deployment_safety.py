@@ -44,6 +44,18 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('.table-scroll table{min-width:760px}', stylesheet)
         self.assertIn('@media(max-width:420px)', stylesheet)
 
+    def test_plan_phase_one_exposes_operational_controls(self):
+        page = (ROOT / 'plan.html').read_text(encoding='utf-8')
+        script = (ROOT / 'plan.js').read_text(encoding='utf-8')
+        for element_id in ('plan-overdue', 'plan-active', 'plan-upcoming',
+                           'plan-completed', 'plan-area', 'plan-shift',
+                           'plan-state', 'plan-date'):
+            self.assertIn(f'id="{element_id}"', page)
+        self.assertIn('<details id="plan-import"', page)
+        self.assertIn('isOverdue', script)
+        self.assertIn('isUpcoming', script)
+        self.assertIn('Sin reporte iniciado', script)
+
 
 class MigrationSafetyTest(unittest.TestCase):
     def setUp(self):
@@ -80,12 +92,14 @@ class MigrationSafetyTest(unittest.TestCase):
             old_log = conn.execute(
                 "SELECT records,source FROM sync_log WHERE source='Versión anterior'").fetchone()
             columns = {item['name'] for item in conn.execute('PRAGMA table_info(sync_log)')}
+            plan_columns = {item['name'] for item in conn.execute('PRAGMA table_info(plan_tasks)')}
             tables = {item['name'] for item in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertEqual(('LEGACY-1', '450099', 20.0, 'Registro ficticio previo'),
                          tuple(report))
         self.assertEqual((1, 'Versión anterior'), tuple(old_log))
         self.assertTrue({'errors', 'detail', 'pending', 'discrepancies'} <= columns)
+        self.assertTrue({'shift', 'journey'} <= plan_columns)
         self.assertTrue({'reports', 'sync_log', 'pending_reports',
                          'ot_discrepancies', 'users', 'sessions',
                          'login_attempts', 'plan_versions', 'plan_tasks'} <= tables)

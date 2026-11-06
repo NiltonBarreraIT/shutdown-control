@@ -47,6 +47,7 @@ class DeploymentConfigurationTest(unittest.TestCase):
     def test_plan_phase_one_exposes_operational_controls(self):
         page = (ROOT / 'plan.html').read_text(encoding='utf-8')
         script = (ROOT / 'plan.js').read_text(encoding='utf-8')
+        stylesheet = (ROOT / 'style.css').read_text(encoding='utf-8')
         for element_id in ('plan-overdue', 'plan-active', 'plan-upcoming',
                            'plan-completed', 'plan-area', 'plan-shift',
                            'plan-state', 'plan-date'):
@@ -55,6 +56,7 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('isOverdue', script)
         self.assertIn('isUpcoming', script)
         self.assertIn('Sin reporte iniciado', script)
+        self.assertIn('.filters.plan-filters input{min-width:0', stylesheet)
 
 
 class MigrationSafetyTest(unittest.TestCase):

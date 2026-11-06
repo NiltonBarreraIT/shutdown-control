@@ -58,6 +58,16 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('Sin reporte iniciado', script)
         self.assertIn('.filters.plan-filters input{min-width:0', stylesheet)
 
+    def test_plan_phase_two_exposes_plan_vs_actual(self):
+        page = (ROOT / 'plan.html').read_text(encoding='utf-8')
+        script = (ROOT / 'plan.js').read_text(encoding='utf-8')
+        for element_id in ('plan-planned', 'plan-actual', 'plan-variance',
+                           'plan-forecast', 'plan-health'):
+            self.assertIn(f'id="{element_id}"', page)
+        for calculation in ('plannedProgress', 'programMetrics', 'comparisonState'):
+            self.assertIn(calculation, script)
+        self.assertIn('Estimación lineal ponderada por duración', page)
+
 
 class MigrationSafetyTest(unittest.TestCase):
     def setUp(self):

@@ -157,7 +157,9 @@ Excel debe incluir como mínimo las columnas `OT`, `OP` o `Actividad`, y `Nombre
 
 El módulo importa también las actividades que no tienen OT u OP, porque siguen formando parte del trabajo planificado. Las identifica con una advertencia de calidad de datos y permite filtrarlas; no pueden vincularse automáticamente hasta contar con ambos identificadores. Para las demás, vincula cada tarea con el último reporte real que tenga la misma combinación `OT + OP`.
 
-La primera fase de control operacional clasifica las actividades según la hora local del navegador en **vencidas**, **en ejecución**, **sin reporte iniciado**, **próximas 12 horas**, **programadas** y **completadas**. Incluye KPI y filtros por estado, área, turno, fecha y texto. Los estados se calculan usando inicio, término y avance real; una actividad completada requiere 100% reportado. No calcula todavía avance planificado, desviación ni proyección de término: esos cálculos corresponden a una fase posterior, una vez validados la línea base y los calendarios de Microsoft Project.
+La primera fase de control operacional clasifica las actividades según la hora local del navegador en **vencidas**, **en ejecución**, **sin reporte iniciado**, **próximas 12 horas**, **programadas** y **completadas**. Incluye KPI y filtros por estado, área, turno, fecha y texto. Los estados se calculan usando inicio, término y avance real; una actividad completada requiere 100% reportado.
+
+La segunda fase agrega una estimación de **avance planificado versus real**, desviación en puntos porcentuales y horas de duración equivalentes, semáforo del programa, proyección lineal de término y clasificación de actividades adelantadas, atrasadas o en línea. El avance global se pondera por la duración de cada actividad. Como el Excel operativo actual no contiene línea base, pesos ni calendarios, estos indicadores se presentan explícitamente como estimaciones lineales; una exportación XML completa de Microsoft Project permitirá refinar el cálculo en una fase posterior.
 
 ### Usuarios y permisos
 

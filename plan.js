@@ -58,6 +58,8 @@ function renderPhaseTwo(tasks,now){
   $('plan-variance').textContent=`${metrics.variance>=0?'+':''}${metrics.variance.toFixed(1)} pp`;
   $('plan-variance-detail').textContent=metrics.counts?.over_100_ops?`${metrics.counts.over_100_ops} OP con acumulado superior a 100%`:'Acumulado validado por OT/OP';
   $('plan-method').textContent=`Ponderación utilizada: ${metrics.method==='planned_hh'?'HH planificadas':metrics.method==='duration'?'duración programada':'uniforme'}. Los incrementos originales se conservan para auditoría.`;
+  const reference=metrics.reference_bhp;
+  if(reference){const taskCoverage=(Number(plan.version?.task_count||0)/reference.activities*100).toFixed(1),hhCoverage=(Number(metrics.planned_hh||0)/reference.planned_hh*100).toFixed(1),deltaPlan=metrics.planned-reference.planned,deltaReal=metrics.actual-reference.actual;$('bhp-comparison').innerHTML=`<strong>Referencia BHP · 06-11-2026 08:00</strong><span>Plan ${reference.planned.toFixed(2)}% · Real ${reference.actual.toFixed(2)}% · Desviación ${reference.variance.toFixed(2)} pp</span><span>Este cálculo: plan ${deltaPlan>=0?'+':''}${deltaPlan.toFixed(2)} pp · real ${deltaReal>=0?'+':''}${deltaReal.toFixed(2)} pp frente a BHP</span><span class="${metrics.planned_hh?'':'data-warning'}">Cobertura disponible: ${taskCoverage}% de actividades · ${hhCoverage}% de HH${metrics.planned_hh?'':' · reimporte la Gantt para cargar HH'}</span>`}
   const health=$('plan-health');
   health.className=`status ${metrics.planned===0?'neutral':metrics.variance>=-5?'success':metrics.variance>=-15?'warn':'danger'}`;
   health.textContent=metrics.planned===0?'Programa aún no iniciado':metrics.variance>=-5?'En línea':metrics.variance>=-15?'Atención':'Desviación crítica';
@@ -120,7 +122,7 @@ function filter(){
     const search=[task.ot,`OT ${task.ot}`,task.activity,`OP ${task.activity}`,task.name,task.area,task.wbs,task.shift,task.journey].join(' ').toLowerCase();
     const taskState=operationalState(task,now).key,comparison=comparisonState(task,now).key;
     const matchesState=!state||taskState===state||comparison===state||(state==='active'&&isActive(task,now))||(state==='upcoming'&&isUpcoming(task,now))||(state==='missing_ids'&&(!task.ot||!task.activity));
-    const matchesDate=!date||String(task.start_at||'').slice(0,10)===date||String(task.finish_at||'').slice(0,10)===date;
+    const filterDay=date.slice(0,10),matchesDate=!date||String(task.start_at||'').slice(0,10)===filterDay||String(task.finish_at||'').slice(0,10)===filterDay;
     return(!query||search.includes(query))&&(!area||task.area===area)&&(!ot||task.ot===ot)&&(!op||task.activity===op)&&(!shift||task.shift===shift)&&matchesState&&matchesDate;
   });
   $('plan-results').textContent=`${tasks.length} resultado${tasks.length===1?'':'s'}`;
@@ -140,6 +142,7 @@ if(typeof document!=='undefined'){
   ['plan-area','plan-ot','plan-op','plan-shift','plan-date'].forEach(id=>$(id).addEventListener('change',()=>{filter();refreshAnalytics()}));
   $('plan-table').addEventListener('click',event=>{const button=event.target.closest('.report-toggle');if(button)showOperationReports(button.dataset.ot,button.dataset.op)});
   $('op-reports-close').addEventListener('click',()=>$('op-reports-dialog').close());
+  $('bhp-cutoff').addEventListener('click',()=>{$('plan-date').value='2026-11-06T08:00';filter();refreshAnalytics()});
   $('plan-upload').addEventListener('click',async()=>{const file=$('plan-file').files[0];if(!file){toast('Seleccione un archivo Excel o XML',true);return}const type=file.name.toLowerCase().endsWith('.xml')?'application/xml':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';try{const result=await api('/api/plan/import',{method:'POST',headers:{'Content-Type':type,'X-Filename':file.name},body:file});toast(`${result.imported} tareas importadas`);plan=await api('/api/plan');render()}catch(error){toast(error.message,true)}});
   load();
 }

@@ -78,6 +78,9 @@ class DeploymentConfigurationTest(unittest.TestCase):
         self.assertIn('curveSeries', script)
         self.assertIn('actualAt', script)
         self.assertIn('Curva S y control ejecutivo', page)
+        self.assertIn('id="bhp-cutoff"', page)
+        self.assertIn('type="datetime-local"', page)
+        self.assertIn("2026-11-06T08:00", script)
 
 
 class MigrationSafetyTest(unittest.TestCase):

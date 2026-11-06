@@ -173,6 +173,7 @@ La tercera fase incorpora una **Curva S** que reconstruye el avance real histór
 - `HH ejecutadas estimadas = Σ(trabajadores × horas reportadas)`; nunca se utilizan como peso planificado.
 - Cada corte histórico excluye reportes posteriores. La proyección base usa el promedio de incrementos positivos de los últimos tres cortes; los escenarios optimista y conservador aplican ±20% al ritmo base.
 - La zona horaria de cálculo es `America/Santiago`.
+- El botón **Corte BHP · 06-11 08:00** aplica exactamente la referencia del 6 de noviembre de 2026 a las 08:00 de Chile. Las versiones Gantt importadas antes de incorporar `planned_hh` deben reimportarse una vez para poblar la columna HH; la migración no inventa ese dato.
 
 ### Usuarios y permisos
 

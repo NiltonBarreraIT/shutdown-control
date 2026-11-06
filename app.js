@@ -52,7 +52,14 @@ function filterOrders(resetPage=false){
  const q=$('search').value.trim().toLowerCase().replace(/\s+/g,' '),area=$('area').value,shift=$('shift').value,attention=$('attention').value;
  const searchText=r=>[r.ot,`OT ${r.ot??''}`,r.activity,`OP ${r.activity??''}`,r.comment,r.reporter].join(' ').toLowerCase().replace(/\s+/g,' ');
  const matches=r=>(!area||r.area===area)&&(!shift||r.shift===shift)&&(!q||searchText(r).includes(q))&&(!attention||(attention==='flag'?r.flags.length:r.progress===0));
- const groups=dataset.ots.map(parent=>{const reports=dataset.reports.filter(r=>r.ot===parent.ot).sort((a,b)=>String(b.submitted_at??'').localeCompare(String(a.submitted_at??''))||String(b.id??'').localeCompare(String(a.id??''),undefined,{numeric:true}));return {parent,reports,visibleReports:reports.filter(matches)}}).filter(group=>group.visibleReports.length).sort((a,b)=>String(b.parent.submitted_at??'').localeCompare(String(a.parent.submitted_at??''))||String(b.parent.id??'').localeCompare(String(a.parent.id??''),undefined,{numeric:true}));
+ const groups=dataset.ots.map(parent=>{
+   const reports=dataset.reports.filter(r=>r.ot===parent.ot).sort((a,b)=>String(b.submitted_at??'').localeCompare(String(a.submitted_at??''))||String(b.id??'').localeCompare(String(a.id??''),undefined,{numeric:true}));
+   const latestOperations=[];
+   const seenActivities=new Set();
+   reports.forEach(report=>{const key=String(report.activity??'').trim()||'__SIN_OP__';if(!seenActivities.has(key)){seenActivities.add(key);latestOperations.push(report)}});
+   const candidates=attention?latestOperations:reports;
+   return {parent,reports,visibleReports:candidates.filter(matches)};
+ }).filter(group=>group.visibleReports.length).sort((a,b)=>String(b.parent.submitted_at??'').localeCompare(String(a.parent.submitted_at??''))||String(b.parent.id??'').localeCompare(String(a.parent.id??''),undefined,{numeric:true}));
  const totalPages=Math.max(1,Math.ceil(groups.length/PAGE_SIZE));
  currentPage=Math.min(currentPage,totalPages);
  const start=(currentPage-1)*PAGE_SIZE;

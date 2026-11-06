@@ -202,6 +202,7 @@ Los reportes pueden contener datos personales, reseñas operacionales y fotograf
 ## Criterios de auditoría
 
 - El Id de Microsoft Forms es la identidad del incremento. Reimportar un Id idéntico no duplica avance.
+- Los filtros `Requieren revisión` y `Sin avance` evalúan el último reporte de cada combinación OT + OP. Las alertas antiguas permanecen en el historial para auditoría, pero dejan de representar el estado vigente cuando un reporte posterior válido resuelve la actividad.
 - El mismo Id con contenido diferente conserva una auditoría en `report_conflicts` y queda informado para revisión.
 - Una suma por OP superior a 100% se registra en `operation_anomalies`; la interfaz muestra máximo 100% sin perder el valor recibido.
 - Registros con OT/OP que no existen en la planificación activa se conservan con alerta de revisión.

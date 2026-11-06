@@ -21,6 +21,13 @@ class FrontendSearchTest(unittest.TestCase):
         self.assertIn('content:attr(data-label)', stylesheet)
         self.assertIn('#orders thead{display:none}', stylesheet)
 
+    def test_attention_filters_use_latest_report_per_operation(self):
+        javascript = (ROOT / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('const latestOperations=[]', javascript)
+        self.assertIn('const seenActivities=new Set()', javascript)
+        self.assertIn('const candidates=attention?latestOperations:reports', javascript)
+        self.assertIn("attention==='flag'?r.flags.length:r.progress===0", javascript)
+
 
 if __name__ == '__main__':
     unittest.main()

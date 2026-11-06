@@ -58,8 +58,6 @@ function renderPhaseTwo(tasks,now){
   $('plan-variance').textContent=`${metrics.variance>=0?'+':''}${metrics.variance.toFixed(1)} pp`;
   $('plan-variance-detail').textContent=metrics.counts?.over_100_ops?`${metrics.counts.over_100_ops} OP con acumulado superior a 100%`:'Acumulado validado por OT/OP';
   $('plan-method').textContent=`Ponderación utilizada: ${metrics.method==='planned_hh'?'HH planificadas':metrics.method==='duration'?'duración programada':'uniforme'}. Los incrementos originales se conservan para auditoría.`;
-  const reference=metrics.reference_bhp;
-  if(reference){const taskCoverage=(Number(plan.version?.task_count||0)/reference.activities*100).toFixed(1),hhCoverage=(Number(metrics.planned_hh||0)/reference.planned_hh*100).toFixed(1),deltaPlan=metrics.planned-reference.planned,deltaReal=metrics.actual-reference.actual;$('bhp-comparison').innerHTML=`<strong>Referencia BHP · 06-11-2026 08:00</strong><span>Plan ${reference.planned.toFixed(2)}% · Real ${reference.actual.toFixed(2)}% · Desviación ${reference.variance.toFixed(2)} pp</span><span>Este cálculo: plan ${deltaPlan>=0?'+':''}${deltaPlan.toFixed(2)} pp · real ${deltaReal>=0?'+':''}${deltaReal.toFixed(2)} pp frente a BHP</span><span class="${metrics.planned_hh?'':'data-warning'}">Cobertura disponible: ${taskCoverage}% de actividades · ${hhCoverage}% de HH${metrics.planned_hh?'':' · reimporte la Gantt para cargar HH'}</span>`}
   const health=$('plan-health');
   health.className=`status ${metrics.planned===0?'neutral':metrics.variance>=-5?'success':metrics.variance>=-15?'warn':'danger'}`;
   health.textContent=metrics.planned===0?'Programa aún no iniciado':metrics.variance>=-5?'En línea':metrics.variance>=-15?'Atención':'Desviación crítica';

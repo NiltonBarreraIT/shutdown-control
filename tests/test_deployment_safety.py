@@ -68,6 +68,8 @@ class DeploymentConfigurationTest(unittest.TestCase):
         for calculation in ('plannedProgress', 'programMetrics', 'comparisonState'):
             self.assertIn(calculation, script)
         self.assertIn('Cálculo backend acumulado por OT/OP', page)
+        self.assertNotIn('id="bhp-comparison"', page)
+        self.assertNotIn("$('bhp-comparison')", script)
 
     def test_plan_phase_three_exposes_executive_curve(self):
         page = (ROOT / 'plan.html').read_text(encoding='utf-8')
